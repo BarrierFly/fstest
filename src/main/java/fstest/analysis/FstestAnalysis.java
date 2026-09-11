@@ -1,0 +1,215 @@
+package fstest.analysis;
+
+import fstest.capture.TriggerCapture;
+import fstest.config.FstestConfig;
+import fstest.record.CaptureSession;
+import fstest.sim.RegionSnapshot;
+import fstest.transform.OffsetSampler;
+import fstest.transform.Symmetry;
+import net.minecraft.core.BlockPos;
+import net.minecraft.server.MinecraftServer;
+import net.minecraft.server.level.ServerLevel;
+import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.util.RandomSource;
+import net.minecraft.world.level.dimension.DimensionType;
+
+import org.jspecify.annotations.Nullable;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.concurrent.atomic.AtomicLong;
+
+/**
+ * Orchestrates one analysis cycle after an accepted operation:
+ * snapshot -> baseline self-check -> D/P/PD simulation batches -> report.
+ */
+public final class FstestAnalysis
+{
+	private static final AtomicLong OP_COUNTER = new AtomicLong();
+
+	private FstestAnalysis()
+	{
+	}
+
+	public static void analysisCrashed(@Nullable ServerPlayer player)
+	{
+		ReportFormatter.error(player, "fstest.analysis.crashed");
+	}
+
+	public static void analyze(ServerLevel level, @Nullable ServerPlayer player, TriggerCapture.OpKind kind,
+	                           BlockPos anchor, CaptureSession realSession, @Nullable RegionSnapshot preOpSnapshot)
+	{
+		FstestConfig cfg = FstestConfig.INSTANCE;
+
+		if (realSession.rootChanges.isEmpty() && realSession.events.isEmpty())
+		{
+			ReportFormatter.message(player, "fstest.analysis.no_events");
+			return;
+		}
+		if (realSession.events.isEmpty())
+		{
+			// something changed, but no wool-marked monitor subscribed under the selected color
+			ReportFormatter.message(player, "fstest.analysis.no_markers");
+			return;
+		}
+
+		MinecraftServer server = level.getServer();
+		if (server == null)
+		{
+			return;
+		}
+
+		int range = cfg.effectiveRange();
+		RegionSnapshot snapshot;
+		try
+		{
+			// Must be pre-operation: the replay re-applies the operation's root
+			// setBlocks, which only mutate anything against the state as it was
+			// before the operation ran. The lazy capture fires at the window's
+			// first root change; the fallback here only covers ops that never
+			// reached one (nothing to replay) or a failed pre-capture.
+			snapshot = preOpSnapshot != null ? preOpSnapshot : RegionSnapshot.capture(level, server, anchor, range);
+		}
+		catch (Throwable t)
+		{
+			ReportFormatter.error(player, "fstest.analysis.snapshot_failed");
+			fstest.FstestMod.LOGGER.error("[fstest] snapshot failed", t);
+			return;
+		}
+		String snapshotSource = preOpSnapshot != null ? "pre-operation" : "post-operation fallback";
+
+		Progress progress = new Progress(player, plannedExecutions(cfg));
+		progress.start();
+
+		// Baseline self-check: identity transform must reproduce reality bit-for-bit,
+		// otherwise the simulator is distorted and comparison output would be meaningless.
+		ReplayEngine.RunOutcome baseline = ReplayEngine.run(level, server, snapshot,
+				Symmetry.IDENTITY, BlockPos.ZERO, "baseline", realSession);
+		progress.tick();
+		DiffEngine.Diff baselineDiff = DiffEngine.diff(realSession.events, baseline.events());
+		if (!baselineDiff.isEmpty())
+		{
+			fstest.record.SimulationLog.write(level, player, kind, anchor, realSession, cfg, snapshotSource, baseline, List.of());
+			ReportFormatter.reportDistortion(player, baselineDiff);
+			return;
+		}
+
+		List<ReplayEngine.RunOutcome> runs = new ArrayList<>();
+		RandomSource rng = RandomSource.create(seedFor(level, anchor));
+		DimensionType dim = level.dimensionType();
+
+		if (cfg.mode().testsDirectionality())
+		{
+			for (Symmetry symmetry : Symmetry.fullSet())
+			{
+				if (symmetry == Symmetry.IDENTITY)
+				{
+					runs.add(baseline); // reuse - identical transform
+					continue;
+				}
+				for (int i = 0; i < cfg.countD(); i++)
+				{
+					runs.add(ReplayEngine.run(level, server, snapshot, symmetry, BlockPos.ZERO,
+							symmetry.label(), realSession));
+					progress.tick();
+				}
+			}
+		}
+
+		if (cfg.mode().testsPositionality())
+		{
+			for (int i = 0; i < cfg.countP(); i++)
+			{
+				BlockPos offset = OffsetSampler.sample(cfg.strategy(), rng, dim, anchor);
+				runs.add(ReplayEngine.run(level, server, snapshot, Symmetry.IDENTITY, offset,
+						"P#" + (i + 1), realSession));
+				progress.tick();
+			}
+		}
+
+		if (cfg.mode() == fstest.config.FstestMode.BOTH)
+		{
+			Symmetry[] set = Symmetry.fullSet();
+			for (int i = 0; i < cfg.countPd(); i++)
+			{
+				Symmetry symmetry = set[rng.nextInt(set.length)];
+				BlockPos offset = OffsetSampler.sample(cfg.strategy(), rng, dim, anchor);
+				runs.add(ReplayEngine.run(level, server, snapshot, symmetry, offset,
+						"PD#" + (i + 1), realSession));
+				progress.tick();
+			}
+		}
+
+		ReportFormatter.report(player, kind, realSession.events, runs);
+		fstest.record.SimulationLog.write(level, player, kind, anchor, realSession, cfg, snapshotSource, baseline, runs);
+	}
+
+	/**
+	 * Total number of replay executions one analysis will perform: the identity
+	 * baseline plus every run that is not the reused baseline (the D set's
+	 * identity symmetry reuses it rather than replaying again).
+	 */
+	private static int plannedExecutions(FstestConfig cfg)
+	{
+		int n = 1; // baseline self-check
+		if (cfg.mode().testsDirectionality())
+		{
+			n += 7 * cfg.countD();
+		}
+		if (cfg.mode().testsPositionality())
+		{
+			n += cfg.countP();
+		}
+		if (cfg.mode() == fstest.config.FstestMode.BOTH)
+		{
+			n += cfg.countPd();
+		}
+		return n;
+	}
+
+	/** Emits a start notice and throttled progress notices (every 10% or 50 runs, whichever is larger). */
+	private static final class Progress
+	{
+		private final ServerPlayer player;
+		private final int total;
+		private final int interval;
+		private int done;
+
+		Progress(@Nullable ServerPlayer player, int total)
+		{
+			this.player = player;
+			this.total = total;
+			this.interval = Math.max(50, (int) Math.ceil(total * 0.10));
+		}
+
+		void start()
+		{
+			ReportFormatter.analysisStart(this.player, this.total);
+		}
+
+		void tick()
+		{
+			this.done++;
+			if (this.done < this.total && this.done % this.interval == 0)
+			{
+				ReportFormatter.analysisProgress(this.player, this.done, this.total);
+			}
+		}
+	}
+
+	private static long seedFor(ServerLevel level, BlockPos anchor)
+	{
+		long counter = OP_COUNTER.incrementAndGet();
+		long time = level.getGameTime();
+		return mix(time ^ anchor.asLong() ^ (counter * 0x9E3779B97F4A7C15L));
+	}
+
+	private static long mix(long x)
+	{
+		x ^= x >>> 33;
+		x *= 0xFF51AFD7ED558CCDL;
+		x ^= x >>> 33;
+		x *= 0xC4CEB9FE1A85EC53L;
+		x ^= x >>> 33;
+		return x;
+	}
+}

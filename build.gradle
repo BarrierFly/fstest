@@ -1,0 +1,75 @@
+plugins {
+	id 'net.fabricmc.fabric-loom-remap' version '1.15.5'
+}
+
+version = "${project.mod_version}-mc${project.minecraft_version}"
+group = project.maven_group
+
+base {
+	archivesName = project.archives_base_name
+}
+
+repositories {
+	maven {
+		name = 'ParchmentMC'
+		url = 'https://maven.parchmentmc.org'
+		content { includeGroup('org.parchmentmc.data') }
+	}
+	maven {
+		name = 'MasaMaven'
+		url = 'https://masa.dy.fi/maven'
+		content { includeModule('carpet', 'fabric-carpet') }
+	}
+	maven {
+		name = 'FallenBreathJitpackMirror'
+		url = 'https://maven.fallenbreath.me/jitpack'
+		content { includeGroupAndSubgroups('com.github') }
+	}
+	maven {
+		name = 'Jitpack'
+		url = 'https://jitpack.io'
+		content { includeGroupAndSubgroups('com.github') }
+	}
+}
+
+dependencies {
+	minecraft "com.mojang:minecraft:${project.minecraft_version}"
+
+	mappings loom.layered() {
+		officialMojangMappings()
+	}
+
+	modImplementation "net.fabricmc:fabric-loader:${project.loader_version}"
+
+	modImplementation("com.github.gnembon:fabric-carpet:${project.carpet_core_version}") {
+		exclude group: 'net.fabricmc', module: 'fabric-loader'
+		exclude group: 'io.github.llamalad7', module: 'mixinextras-fabric'
+	}
+}
+
+java {
+	sourceCompatibility = JavaVersion.VERSION_21
+	targetCompatibility = JavaVersion.VERSION_21
+	withSourcesJar()
+}
+
+tasks.withType(JavaCompile).configureEach {
+	options.encoding = 'UTF-8'
+	options.compilerArgs << '-Xlint:deprecation' << '-Xlint:unchecked'
+}
+
+processResources {
+	def modProperties = [
+			"id"                 : project.mod_id,
+			"name"               : project.mod_name,
+			"description"        : project.mod_description,
+			"version"            : project.mod_version,
+			"carpet_dependency"  : project.carpet_dependency,
+			"minecraft_dependency": project.minecraft_dependency,
+	]
+	inputs.properties(modProperties)
+
+	filesMatching("fabric.mod.json") {
+		expand modProperties
+	}
+}

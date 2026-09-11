@@ -1,0 +1,24 @@
+{
+	"required": true,
+	"package": "fstest.mixin",
+	"compatibilityLevel": "JAVA_21",
+	"minVersion": "0.8",
+	"mixins": [
+		"CollectingNeighborUpdaterAccessor",
+		"LevelChunkRemovalWindowMixin",
+		"LevelComparatorUpdateMixin",
+		"LevelNeighborUpdaterAccessor",
+		"LevelSetBlockMixin",
+		"LevelTicksAccessor",
+		"LevelTicksScheduleMixin",
+		"LevelTicksWorldMixin",
+		"ServerLevelBlockEventMixin",
+		"ServerLevelBlockEventsAccessor",
+		"ServerLevelDispatchMixin",
+		"ServerLevelTickListWiringMixin",
+		"ServerPlayerGameModeMixin"
+	],
+	"injectors": {
+		"defaultRequire": 1
+	}
+}

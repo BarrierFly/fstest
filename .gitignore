@@ -1,0 +1,25 @@
+# Gradle
+.gradle/
+build/
+out/
+
+# Runtime / logs
+run/
+fstest-logs/
+*.log
+build-last.log
+
+# IDE
+.idea/
+*.iml
+*.ipr
+*.iws
+.vscode/
+.settings/
+.classpath
+.project
+bin/
+
+# OS
+.DS_Store
+Thumbs.db
