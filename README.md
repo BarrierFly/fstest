@@ -55,7 +55,7 @@ Key properties:
 
 A subcommand invoked without its required arguments prints that subcommand's own usage line instead of Brigadier's generic tree help; bare `/fstest` prints a one-line index of the subcommands.
 
-Settings are sticky in memory; they fall back to the initial values (and the target list is emptied) after a restart (persistence is tracked in [`docs/v2-todo.md`](docs/v2-todo.md)).
+Settings are sticky in memory; they fall back to the initial values (and the target list is emptied) after a restart (persistence is planned for v2).
 
 ### Selecting which blocks to monitor (wool markers)
 
@@ -121,7 +121,7 @@ For directionality testing, any non-empty diff means the contraption is **not** 
 - Block-entity removal side effects (`BlockEntity#preRemoveSideEffects`) are deliberately not simulated. Its default implementation drops container contents (spawning item entities); overrides drop campfire / lectern / jukebox / shulker box / furnace contents, scream from a removed sculk shrieker (game events), or finalize a moving piston (`PistonMovingBlockEntity#finalTick`). Entities, item drops and game events are out of scope per the plan, and none of these emits the recorded event kinds, so the diff is unaffected today - listed here so that a future test depending on them is not mistaken for a simulator bug.
 - Scheduled ticks are recorded but not executed inside the operation's synchronous window - matching vanilla semantics, where queued ticks only run in later tick phases.
 - The simulated space deliberately ignores the dimension's build height (per the plan: "the custom virtual world ignores world height limits"): a vertical P offset may place the captured region's edges outside `[minY, maxY]`, and those blocks stay stored and readable. Enforcing the build height there would silently turn supporting ground (or the end rod / wool above) into void air and produce a spurious run with zero events.
-- `hashdelta` strategy, JSONL machine output, configuration persistence (including targets), exact light copying, per-marker grouped output, a clickable log path and regression tests are v2 items; the prioritized backlog is [`docs/v2-todo.md`](docs/v2-todo.md).
+- `hashdelta` strategy, JSONL machine output, configuration persistence (including targets), exact light copying, per-marker grouped output, a clickable log path and regression tests are v2 items.
 - A per-analysis text log is written to `<run-dir>/fstest-logs/` (see [Output destinations](#output-destinations)); JSONL is planned for v2.
 
 ## Building
@@ -137,7 +137,7 @@ The project resolves fabric-carpet through Jitpack mirrors; see `build.gradle`.
 
 fstest was developed with reference to the following open-source projects. None of their source code is bundled in the built jar.
 
-- **[Carpet TIS Addition](https://github.com/TISUnion/Carpet-TIS-Addition)** — by TISUnion, maintained by Fallen_Breath — **LGPL-3.0**. The collection layer re-implements its *microTiming* subscription rules and event semantics (wool / end-rod markers, block-update subtypes, creation success flags, comparator updates). Deliberate differences are catalogued in [`docs/tis-divergences.md`](docs/tis-divergences.md).
+- **[Carpet TIS Addition](https://github.com/TISUnion/Carpet-TIS-Addition)** — by TISUnion, maintained by Fallen_Breath — **LGPL-3.0**. The collection layer re-implements its *microTiming* subscription rules and event semantics (wool / end-rod markers, block-update subtypes, creation success flags, comparator updates).
 - **[fabric-carpet](https://github.com/gnembon/fabric-carpet)** — by gnembon — **MIT**. fstest is a Carpet extension and follows Carpet's extension API, mixin conventions and command-permission level (2, the same as `/log`).
 - **[MicroTimingReplay (MTIR)](https://github.com/hotpad100c/microtimingreplay)** — by Ryan100C (hotpad100c) — **MIT**. Consulted as a reference for recording and step-by-step replaying of micro-timing events.
 - **[simulatica](https://github.com/hotpad100c/simulatica)** — by Ryan100C (hotpad100c) — **MIT**. Consulted as a reference for the isolated in-world simulation approach.
@@ -187,7 +187,7 @@ LGPL-3.0-only. The collection layer re-implements concepts from [Carpet TIS Addi
 
 子命令缺少必需参数时会输出该子命令自己的用法行，而不是 Brigadier 的通用命令树提示；裸 `/fstest` 给出一行子命令索引。
 
-配置粘性保存在内存；重启后回落初始值（目标列表一并清空），持久化登记在 [`docs/v2-todo.md`](docs/v2-todo.md)。
+配置粘性保存在内存；重启后回落初始值（目标列表一并清空），持久化属 v2。
 
 ## 监测方式（羊毛标记）
 
@@ -249,7 +249,7 @@ LGPL-3.0-only. The collection layer re-implements concepts from [Carpet TIS Addi
 - 方块实体的移除副作用（`BlockEntity#preRemoveSideEffects`）**有意不模拟**。其默认实现是掉落容器内容（生成掉落物实体）；覆写还包括营火/讲台/唱片机/潜影盒/熔炉掉落内容、被拆的幽匿尖啸体尖叫（game event）、以及活塞移动方块的收尾（`PistonMovingBlockEntity#finalTick`）。实体、掉落物与 game event 按规划均在窗口外，且它们都不产生被记录的事件类型，所以当前不影响 diff；写在这里是为了将来若有测试依赖它们，不会被误当成模拟器 bug。
 - 操作窗口内计划刻只记录不执行（与原版同步处理语义一致）；创建尝试会作为事件参与对比。重放无法复现的“操作处理器直接排定的计划刻”（如按钮的弹起）会回填进模拟；方块事件创建**不回填**——模拟必须从重放的更新中自然产生它们，缺了就是真实的失真信号。
 - 模拟空间按规范有意**无视世界高度限制**：垂直 P 偏移可能把快照区域边缘放到 `[minY, maxY]` 之外，这些方块仍然保留且可读。若在这里强制建造高度，线下方的支撑方块或活塞上方的末地烛/羊毛会静默变成虚空空气，导致该轮零事件的假失真。
-- v1 已落地每分析一次的纯文本日志（`fstest-logs/`）；v2 计划增加 JSONL 变体、`/fstest` 历史浏览命令、配置持久化（含 targets）、精确光照、`hashdelta`、按标记分组输出、可点击日志路径与回归测试——按优先级整理在 [`docs/v2-todo.md`](docs/v2-todo.md)。
+- v1 已落地每分析一次的纯文本日志（`fstest-logs/`）；v2 计划增加 JSONL 变体、`/fstest` 历史浏览命令、配置持久化（含 targets）、精确光照、`hashdelta`、按标记分组输出、可点击日志路径与回归测试。
 
 ## 构建
 
@@ -263,7 +263,7 @@ LGPL-3.0-only. The collection layer re-implements concepts from [Carpet TIS Addi
 
 fstest 的开发全程参考了以下开源项目；构建出的 jar 未打包其中任何源代码。
 
-- **[Carpet TIS Addition](https://github.com/TISUnion/Carpet-TIS-Addition)** — 作者 TISUnion，主要维护者 Fallen_Breath — **LGPL-3.0**。采集层复刻其*微时序*（microTiming）的订阅规则与事件语义（羊毛/末地烛标记、方块更新子类型、创建成功标志、比较器更新）；有意的差异记录在 [`docs/tis-divergences.md`](docs/tis-divergences.md)。
+- **[Carpet TIS Addition](https://github.com/TISUnion/Carpet-TIS-Addition)** — 作者 TISUnion，主要维护者 Fallen_Breath — **LGPL-3.0**。采集层复刻其*微时序*（microTiming）的订阅规则与事件语义（羊毛/末地烛标记、方块更新子类型、创建成功标志、比较器更新）。
 - **[fabric-carpet](https://github.com/gnembon/fabric-carpet)** — 作者 gnembon — **MIT**。fstest 本身是 Carpet 扩展，沿用其扩展 API、mixin 约定与命令权限等级（2，与 `/log` 一致）。
 - **[MicroTimingReplay (MTIR)](https://github.com/hotpad100c/microtimingreplay)** — 作者 Ryan100C（hotpad100c）— **MIT**。参考其微时序事件的记录与逐步回放设计。
 - **[simulatica](https://github.com/hotpad100c/simulatica)** — 作者 Ryan100C（hotpad100c）— **MIT**。参考其隔离式世界内模拟的思路。
