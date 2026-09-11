@@ -42,7 +42,7 @@ Key properties:
 | `/fstest mode <none\|directionality\|positionality\|both>` | `directionality` accepts aliases `directional/direction/D/d`; `positionality` accepts `positional/position/P/p`; `both` accepts `DP/PD` (case-insensitive). Default `none`. |
 | `/fstest color <all\|dye color>` | Only monitor markers whose colour matches this filter. Default `all`. |
 | `/fstest count <d\|p\|pd> <n>` | Simulation counts per mode (d default 1, p/pd default 100). Independent settings. |
-| `/fstest range <unlimited\|r>` | Snapshot radius cap (r 1..128). Default `unlimited` (= effective 48 in v1). |
+| `/fstest range <unlimited\|r>` | Snapshot radius cap (r 1..128). Default `unlimited` (= effective 48 in v1). **Set this deliberately — see [Snapshot radius](#snapshot-radius-and-performance-read-this-first).** |
 | `/fstest pstrategy <uniform\|chunkborder\|hashdelta>` | Offset sampling for P/PD. `hashdelta` is planned for v2. |
 | `/fstest updates <on\|off>` | Record block-update dispatch events (`NU`) or leave them out of the streams. Default `on`. |
 | `/fstest duplications <on\|off>` | Record creation attempts that were rejected as duplicates (the `dup` entries) or leave only the successful ones. Default `on`. |
@@ -56,6 +56,21 @@ Key properties:
 A subcommand invoked without its required arguments prints that subcommand's own usage line instead of Brigadier's generic tree help; bare `/fstest` prints a one-line index of the subcommands.
 
 Settings are sticky in memory; they fall back to the initial values (and the target list is emptied) after a restart (persistence is planned for v2).
+
+### Snapshot radius and performance (read this first)
+
+> [!IMPORTANT]
+> **Set `/fstest range` to a sensible value before testing. The default (`unlimited` = radius 48 in v1) captures a 97×97×97 box and is very heavy — with the default counts (209 replay runs) the server will visibly stall.**
+
+Why: the snapshot reads the **whole cube** of half-width `range` around the operation anchor (roughly `(2r+1)³` block reads), and every stored non-air block is then re-transformed and re-written once per replay run. The number of stored blocks — and therefore the cost of *every* run — grows with `r³`, and all runs execute **synchronously on the server thread**, so the whole analysis lands in a single tick. `/fstest range` and `/fstest count` are the two knobs that decide whether this takes milliseconds or seconds.
+
+Guidance:
+
+- **Set the radius just large enough to cover the contraption plus the extent its cascades travel** — for a small redstone device, `range 4`–`16` is usually plenty (e.g. `/fstest range 8`). Do not reach for `unlimited` unless you really need a large region.
+- **Lower the counts while iterating** (`/fstest count p 20`, `/fstest count pd 20`); raise them only for a final confirmation run.
+- **Too small a radius is also wrong**: anything outside the box reads as void air, so a cascade that leaves the region diverges from reality and trips the baseline self-check ("simulator distortion"). If that happens, increase the radius rather than ignoring it.
+- `unlimited` does **not** mean unbounded or cheap — in v1 it is simply the fixed default of 48 (capped at `MAX_RANGE = 128`); both extremes are expensive.
+- Chat/console progress lines tell you how far along a long run is, but they do not reduce the stall — only a smaller radius/count does.
 
 ### Selecting which blocks to monitor (wool markers)
 
@@ -109,11 +124,12 @@ For directionality testing, any non-empty diff means the contraption is **not** 
 
 #### Monitoring troubleshooting
 
-- "No monitor subscribed under the selected wool colour near the operation; place wool next to your redstone components or register a /fstest targets marker." → the colour filter excludes your wool/target (`/fstest color all` or match the colour); or there is no wool in the component's subscription position (see the table) and no `/fstest targets` marker on the component; or it is too far from the operation anchor (use `/fstest range unlimited` to take a bigger snapshot). If you registered targets, run `/fstest targets query`: a target annotated "(excluded by the current color filter)" is being filtered out.
+- "No monitor subscribed under the selected wool colour near the operation; place wool next to your redstone components or register a /fstest targets marker." → the colour filter excludes your wool/target (`/fstest color all` or match the colour); or there is no wool in the component's subscription position (see the table) and no `/fstest targets` marker on the component; or it is outside the snapshot radius (raise `/fstest range`, but keep it as small as the device allows — see [Snapshot radius and performance](#snapshot-radius-and-performance-read-this-first)). If you registered targets, run `/fstest targets query`: a target annotated "(excluded by the current color filter)" is being filtered out.
 - "Simulator distortion detected! ... baseline differences ..." → your contraption uses something the v1 simulator does not cover (light-sensitive components, entities, explosions, piston move-shape effects on rails/fences, etc.). The per-file log under `fstest-logs/` will show which `+`/`-` lines the baseline disagrees on — that is the first thing to fix.
 
 ## v1 scope & limitations
 
+- **Performance / snapshot radius**: the snapshot reads the whole `(2·range+1)³` cube around the anchor, and every replay run re-writes its non-air blocks — cost grows with `range³` and is multiplied by the number of runs, all **synchronously on the server thread**. Always set `/fstest range` to just cover the contraption and its cascades, and lower the counts while iterating; the default `unlimited` (= 48) with default counts will stall the server. See [Snapshot radius and performance](#snapshot-radius-and-performance-read-this-first).
 - Single version build (MC 1.21.11); Stonecutter multi-version expansion (1.19.4 / 1.21.10 / 26.x) is the next step.
 - Lighting is approximated with neutral constants (sky 15, block 0): light-sensitive components (daylight sensors etc.) produce results for reference only.
 - Entities, explosions, and block drops are out of the simulation window; operations relying on them will surface as baseline distortion warnings.
@@ -174,7 +190,7 @@ LGPL-3.0-only. The collection layer re-implements concepts from [Carpet TIS Addi
 | `/fstest mode <none\|directionality\|positionality\|both>` | `directionality` 可简写 `directional/direction/D/d`；`positionality` 可简写 `positional/position/P/p`；`both` 可简写 `DP/PD`（大小写均可）。默认 `none`。 |
 | `/fstest color <all\|羊毛颜色>` | 只监测颜色匹配该筛选器的标记。默认 `all`。 |
 | `/fstest count <d\|p\|pd> <n>` | 各模式的模拟次数（d 默认 1，p/pd 默认 100），三档互不共用。 |
-| `/fstest range <unlimited\|r>` | 快照半径上限（r 取 1..128）。默认 `unlimited`（v1 实际按 48 生效）。 |
+| `/fstest range <unlimited\|r>` | 快照半径上限（r 取 1..128）。默认 `unlimited`（v1 实际按 48 生效）。**务必主动设置——见[快照半径与性能](#快照半径与性能先看这里)。** |
 | `/fstest pstrategy <uniform\|chunkborder\|hashdelta>` | P/PD 的偏移采样策略；`hashdelta` 属 v2 规划。 |
 | `/fstest updates <on\|off>` | 是否记录方块更新派发事件（`NU`）。默认 `on`。 |
 | `/fstest duplications <on\|off>` | 是否记录因重复被拒的创建尝试（`dup` 条目）。默认 `on`。 |
@@ -188,6 +204,21 @@ LGPL-3.0-only. The collection layer re-implements concepts from [Carpet TIS Addi
 子命令缺少必需参数时会输出该子命令自己的用法行，而不是 Brigadier 的通用命令树提示；裸 `/fstest` 给出一行子命令索引。
 
 配置粘性保存在内存；重启后回落初始值（目标列表一并清空），持久化属 v2。
+
+### 快照半径与性能（先看这里）
+
+> [!IMPORTANT]
+> **测试前务必把 `/fstest range` 设成合理值。默认的 `unlimited`（v1 实际半径 48）会快照 97×97×97 的立方体，非常重——配合默认次数（209 轮重放）服务端会明显卡顿。**
+
+原因：快照会读取锚点周围半边长 `range` 的**整个立方体**（约 `(2r+1)³` 次读方块），其中每个非空气方块又要在**每一轮重放**里重新变换、重新写入。方块数量（也就是每轮的成本）随 `r³` 增长，且所有轮次都**同步跑在服务端线程**上，整次分析挤在一个游戏刻里。`/fstest range` 和 `/fstest count` 决定了这是几毫秒还是几秒。
+
+建议：
+
+- **半径设为刚好覆盖装置及其级联波及范围**——小型红石装置通常 `range 4`~`16` 足够（例如 `/fstest range 8`）。除非确实需要大范围，不要用 `unlimited`。
+- **边调边试时把次数调小**（`/fstest count p 20`、`/fstest count pd 20`），只在最终确认时再调大。
+- **半径也不能太小**：盒子之外的方块会被读成虚空空气，级联一旦跑出范围就会与现实不符，触发基线自检的"模拟器失真"告警。遇到这种情况要调大半径，而不是忽略它。
+- `unlimited` 并不代表"无限"或"便宜"——v1 里它就是固定的 48（上限 `MAX_RANGE = 128`），两端都贵。
+- 聊天/控制台的进度提示只能告诉你跑到哪了，**不会减少卡顿**；真正有用的是更小的半径和次数。
 
 ## 监测方式（羊毛标记）
 
@@ -237,11 +268,12 @@ LGPL-3.0-only. The collection layer re-implements concepts from [Carpet TIS Addi
 
 ### 监测排错
 
-- "No monitor subscribed under the selected wool colour near the operation; place wool next to your redstone components or register a /fstest targets marker." → 颜色筛选器把羊毛/目标过滤掉了（`/fstest color all` 或换成对应色）；或组件订阅位置没放羊毛（见上表）、组件上也没注册 target；或距离操作点太远（用 `/fstest range unlimited` 扩大快照半径）。若已注册目标，执行 `/fstest targets query`：被标注"（被当前颜色筛选排除）"的就是被筛掉的。
+- "No monitor subscribed under the selected wool colour near the operation; place wool next to your redstone components or register a /fstest targets marker." → 颜色筛选器把羊毛/目标过滤掉了（`/fstest color all` 或换成对应色）；或组件订阅位置没放羊毛（见上表）、组件上也没注册 target；或在快照半径之外（调大 `/fstest range`，但保持装置所需的最小值——见[快照半径与性能](#快照半径与性能先看这里)）。若已注册目标，执行 `/fstest targets query`：被标注"（被当前颜色筛选排除）"的就是被筛掉的。
 - "Simulator distortion detected! ... baseline differences ..." → 装置里有 v1 模拟器没覆盖到的东西（光敏元件、依赖实体的部分、爆炸、铁轨/栅栏的活塞搬移形状等）。看 `fstest-logs/` 里对应文件，基线 diff 行就是排查起点。
 
 ## 版本与限制
 
+- **性能 / 快照半径**：快照会读取锚点周围 `(2·range+1)³` 的整个立方体，每一轮重放都要重写其中的非空气方块——成本随 `range³` 增长，再乘以轮数，且**同步跑在服务端线程**上。务必把 `/fstest range` 设为刚好覆盖装置及其级联范围，并先调小次数再测试；默认的 `unlimited`（=48）配合默认次数会卡服。详见[快照半径与性能](#快照半径与性能先看这里)。
 - 当前为 v1 单版本构建（MC 1.21.11）；后续经 Stonecutter 扩展 1.19.4 / 1.21.10 / 26.x 并建立黄金回放回归用例。
 - 光照以中性常量近似（天空 15 / 方块 0），光敏元件结果仅供参考（v2 精确复制光照）。
 - 实体、爆炸、掉落物不在模拟窗口内；依赖它们的操作会以基线失真告警呈现。
