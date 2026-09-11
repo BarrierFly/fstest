@@ -133,6 +133,18 @@ For directionality testing, any non-empty diff means the contraption is **not** 
 
 The project resolves fabric-carpet through Jitpack mirrors; see `build.gradle`.
 
+## Acknowledgements
+
+fstest was developed with reference to the following open-source projects. None of their source code is bundled in the built jar.
+
+- **[Carpet TIS Addition](https://github.com/TISUnion/Carpet-TIS-Addition)** — by TISUnion, maintained by Fallen_Breath — **LGPL-3.0**. The collection layer re-implements its *microTiming* subscription rules and event semantics (wool / end-rod markers, block-update subtypes, creation success flags, comparator updates). Deliberate differences are catalogued in [`docs/tis-divergences.md`](docs/tis-divergences.md).
+- **[fabric-carpet](https://github.com/gnembon/fabric-carpet)** — by gnembon — **MIT**. fstest is a Carpet extension and follows Carpet's extension API, mixin conventions and command-permission level (2, the same as `/log`).
+- **[MicroTimingReplay (MTIR)](https://github.com/hotpad100c/microtimingreplay)** — by Ryan100C (hotpad100c) — **MIT**. Consulted as a reference for recording and step-by-step replaying of micro-timing events.
+- **[simulatica](https://github.com/hotpad100c/simulatica)** — by Ryan100C (hotpad100c) — **MIT**. Consulted as a reference for the isolated in-world simulation approach.
+- **[Ticker](https://github.com/hotpad100c/ticker)** — by Ryan100C (hotpad100c) — **CC0-1.0**. Consulted as a reference for command-driven injection of block events, scheduled ticks and world/game events.
+
+The development reference checkouts (`Carpet-TIS-Addition/`, `fabric-carpet/`, `microtimingreplay/`, `simulatica/`, `ticker/`) are not part of this repository.
+
 ## License
 
 LGPL-3.0-only. The collection layer re-implements concepts from [Carpet TIS Addition](https://github.com/TISUnion/Carpet-TIS-Addition)'s microTiming logger under the same license; no source code of that mod is included or linked.
@@ -246,6 +258,18 @@ LGPL-3.0-only. The collection layer re-implements concepts from [Carpet TIS Addi
 ```bash
 ./gradlew compileJava   # 或 ./gradlew build 产出可安装 jar
 ```
+
+## 致谢
+
+fstest 的开发全程参考了以下开源项目；构建出的 jar 未打包其中任何源代码。
+
+- **[Carpet TIS Addition](https://github.com/TISUnion/Carpet-TIS-Addition)** — 作者 TISUnion，主要维护者 Fallen_Breath — **LGPL-3.0**。采集层复刻其*微时序*（microTiming）的订阅规则与事件语义（羊毛/末地烛标记、方块更新子类型、创建成功标志、比较器更新）；有意的差异记录在 [`docs/tis-divergences.md`](docs/tis-divergences.md)。
+- **[fabric-carpet](https://github.com/gnembon/fabric-carpet)** — 作者 gnembon — **MIT**。fstest 本身是 Carpet 扩展，沿用其扩展 API、mixin 约定与命令权限等级（2，与 `/log` 一致）。
+- **[MicroTimingReplay (MTIR)](https://github.com/hotpad100c/microtimingreplay)** — 作者 Ryan100C（hotpad100c）— **MIT**。参考其微时序事件的记录与逐步回放设计。
+- **[simulatica](https://github.com/hotpad100c/simulatica)** — 作者 Ryan100C（hotpad100c）— **MIT**。参考其隔离式世界内模拟的思路。
+- **[Ticker](https://github.com/hotpad100c/ticker)** — 作者 Ryan100C（hotpad100c）— **CC0-1.0**。参考其用命令注入方块事件、计划刻与世界/游戏事件的调试工具。
+
+开发时使用的参考仓库（`Carpet-TIS-Addition/`、`fabric-carpet/`、`microtimingreplay/`、`simulatica/`、`ticker/`）不属于本仓库。
 
 ## 许可
 

@@ -9,6 +9,9 @@ fstest-logs/
 *.log
 build-last.log
 
+# Design notes / working docs (kept on disk, not versioned)
+docs/
+
 # IDE
 .idea/
 *.iml
