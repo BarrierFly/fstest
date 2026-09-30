@@ -60,7 +60,7 @@ Settings are sticky in memory; they fall back to the initial values (and the tar
 ### Snapshot radius and performance (read this first)
 
 > [!IMPORTANT]
-> **Set `/fstest range` to a sensible value before testing. The default (`unlimited` = radius 48 in v1) captures a 97×97×97 box and is very heavy — with the default counts (209 replay runs) the server will visibly stall.**
+> **Set `/fstest range` to a sensible value before testing. The default (`unlimited` = radius 48 in v1) captures a 97×97×97 box and is very heavy — with the default counts (208 replay runs) the server will visibly stall.**
 
 Why: the snapshot reads the **whole cube** of half-width `range` around the operation anchor (roughly `(2r+1)³` block reads), and every stored non-air block is then re-transformed and re-written once per replay run. The number of stored blocks — and therefore the cost of *every* run — grows with `r³`, and all runs execute **synchronously on the server thread**, so the whole analysis lands in a single tick. `/fstest range` and `/fstest count` are the two knobs that decide whether this takes milliseconds or seconds.
 
@@ -208,7 +208,7 @@ LGPL-3.0-only. The collection layer re-implements concepts from [Carpet TIS Addi
 ### 快照半径与性能（先看这里）
 
 > [!IMPORTANT]
-> **测试前务必把 `/fstest range` 设成合理值。默认的 `unlimited`（v1 实际半径 48）会快照 97×97×97 的立方体，非常重——配合默认次数（209 轮重放）服务端会明显卡顿。**
+> **测试前务必把 `/fstest range` 设成合理值。默认的 `unlimited`（v1 实际半径 48）会快照 97×97×97 的立方体，非常重——配合默认次数（208 轮重放）服务端会明显卡顿。**
 
 原因：快照会读取锚点周围半边长 `range` 的**整个立方体**（约 `(2r+1)³` 次读方块），其中每个非空气方块又要在**每一轮重放**里重新变换、重新写入。方块数量（也就是每轮的成本）随 `r³` 增长，且所有轮次都**同步跑在服务端线程**上，整次分析挤在一个游戏刻里。`/fstest range` 和 `/fstest count` 决定了这是几毫秒还是几秒。
 
