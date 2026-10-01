@@ -60,6 +60,20 @@ public final class SimLevelData implements WritableLevelData
 		return this.gameTime;
 	}
 
+	/**
+	 * Advances the simulated clock by one game tick, mirroring vanilla
+	 * {@code ServerLevel#tickTime}: game time always moves (it drives scheduled
+	 * tick trigger times), day time only while the daylight gamerule is on.
+	 */
+	public void advanceTickTime()
+	{
+		this.gameTime++;
+		if (this.gameRules.get(net.minecraft.world.level.gamerules.GameRules.ADVANCE_TIME))
+		{
+			this.dayTime++;
+		}
+	}
+
 	@Override
 	public long getDayTime()
 	{

@@ -5,6 +5,7 @@ import carpet.CarpetServer;
 import com.mojang.brigadier.CommandDispatcher;
 import fstest.command.FstestCommand;
 import fstest.config.FstestConfig;
+import fstest.config.FstestPersistence;
 import net.minecraft.commands.CommandBuildContext;
 import net.minecraft.commands.CommandSourceStack;
 
@@ -17,8 +18,9 @@ public class FstestExtension implements CarpetExtension
 	@Override
 	public void onGameStarted()
 	{
-		// sticky configuration lives in memory only; restart falls back to defaults (v1)
 		FstestConfig.reset();
+		// sticky configuration, persisted to <config>/fstest.json
+		FstestPersistence.initialize();
 	}
 
 	@Override

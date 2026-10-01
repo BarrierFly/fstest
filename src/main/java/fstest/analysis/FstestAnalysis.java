@@ -3,6 +3,7 @@ package fstest.analysis;
 import fstest.capture.TriggerCapture;
 import fstest.config.FstestConfig;
 import fstest.record.CaptureSession;
+import fstest.record.FstEvent;
 import fstest.sim.RegionSnapshot;
 import fstest.transform.OffsetSampler;
 import fstest.transform.Symmetry;
@@ -21,6 +22,17 @@ import java.util.concurrent.atomic.AtomicLong;
 /**
  * Orchestrates one analysis cycle after an accepted operation:
  * snapshot -> baseline self-check -> D/P/PD simulation batches -> report.
+ *
+ * Instant mode (MTR off): every run replays the operation's synchronous
+ * window; runs diff against the real recording.
+ *
+ * MTR mode ({@code /fstest mtr <ticks>}): every run additionally executes
+ * {@code ticks} game ticks inside the simulated space (scheduled ticks, block
+ * events, block entity ticking - the real world is never advanced). The
+ * baseline self-check still compares the identity run's pre-tick events
+ * against the real instant-window stream; the transformed runs then diff
+ * against the BASELINE RUN's full multi-tick stream, since there is no
+ * reality recording beyond the instant window.
  */
 public final class FstestAnalysis
 {
@@ -58,16 +70,37 @@ public final class FstestAnalysis
 			return;
 		}
 
-		int range = cfg.effectiveRange();
+		int simTicks = cfg.mtrTicks();
+		boolean mtr = cfg.isMtrEnabled();
+		if (mtr && cfg.mtrArea() == null)
+		{
+			// zero-config fallback: the anchor-centred range cube bounds the
+			// multi-tick simulation just as it bounds the instant window
+			ReportFormatter.message(player, "fstest.analysis.mtr_no_area");
+		}
+
+		long analysisStart = System.nanoTime();
 		RegionSnapshot snapshot;
 		try
 		{
 			// Must be pre-operation: the replay re-applies the operation's root
 			// setBlocks, which only mutate anything against the state as it was
 			// before the operation ran. The lazy capture fires at the window's
-			// first root change; the fallback here only covers ops that never
-			// reached one (nothing to replay) or a failed pre-capture.
-			snapshot = preOpSnapshot != null ? preOpSnapshot : RegionSnapshot.capture(level, server, anchor, range);
+			// first root change (and already honours the MTR area selection);
+			// the fallback here only covers ops that never reached one (nothing
+			// to replay) or a failed pre-capture.
+			if (preOpSnapshot != null)
+			{
+				snapshot = preOpSnapshot;
+			}
+			else if (mtr && cfg.mtrArea() != null)
+			{
+				snapshot = RegionSnapshot.capture(level, server, anchor, cfg.mtrArea());
+			}
+			else
+			{
+				snapshot = RegionSnapshot.capture(level, server, anchor, cfg.effectiveRange());
+			}
 		}
 		catch (Throwable t)
 		{
@@ -80,15 +113,20 @@ public final class FstestAnalysis
 		Progress progress = new Progress(player, plannedExecutions(cfg));
 		progress.start();
 
-		// Baseline self-check: identity transform must reproduce reality bit-for-bit,
-		// otherwise the simulator is distorted and comparison output would be meaningless.
+		// Baseline self-check: the identity transform must reproduce reality
+		// bit-for-bit over the instant window, otherwise the simulator is
+		// distorted and comparison output would be meaningless.
 		ReplayEngine.RunOutcome baseline = ReplayEngine.run(level, server, snapshot,
-				Symmetry.IDENTITY, BlockPos.ZERO, "baseline", realSession);
+				Symmetry.IDENTITY, BlockPos.ZERO, "baseline", realSession, simTicks);
 		progress.tick();
-		DiffEngine.Diff baselineDiff = DiffEngine.diff(realSession.events, baseline.events());
+		List<FstEvent> baselineInstant = mtr
+				? baseline.events().subList(0, baseline.stats().preTickEvents())
+				: baseline.events();
+		DiffEngine.Diff baselineDiff = DiffEngine.diff(realSession.events, baselineInstant);
 		if (!baselineDiff.isEmpty())
 		{
-			fstest.record.SimulationLog.write(level, player, kind, anchor, realSession, cfg, snapshotSource, baseline, List.of());
+			fstest.record.SimulationLog.write(level, player, kind, anchor, realSession, cfg, snapshotSource,
+					baseline, List.of(), mtr, System.nanoTime() - analysisStart);
 			ReportFormatter.reportDistortion(player, baselineDiff);
 			return;
 		}
@@ -109,7 +147,7 @@ public final class FstestAnalysis
 				for (int i = 0; i < cfg.countD(); i++)
 				{
 					runs.add(ReplayEngine.run(level, server, snapshot, symmetry, BlockPos.ZERO,
-							symmetry.label(), realSession));
+							symmetry.label(), realSession, simTicks));
 					progress.tick();
 				}
 			}
@@ -121,7 +159,7 @@ public final class FstestAnalysis
 			{
 				BlockPos offset = OffsetSampler.sample(cfg.strategy(), rng, dim, anchor);
 				runs.add(ReplayEngine.run(level, server, snapshot, Symmetry.IDENTITY, offset,
-						"P#" + (i + 1), realSession));
+						"P#" + (i + 1), realSession, simTicks));
 				progress.tick();
 			}
 		}
@@ -134,13 +172,18 @@ public final class FstestAnalysis
 				Symmetry symmetry = set[rng.nextInt(set.length)];
 				BlockPos offset = OffsetSampler.sample(cfg.strategy(), rng, dim, anchor);
 				runs.add(ReplayEngine.run(level, server, snapshot, symmetry, offset,
-						"PD#" + (i + 1), realSession));
+						"PD#" + (i + 1), realSession, simTicks));
 				progress.tick();
 			}
 		}
 
-		ReportFormatter.report(player, kind, realSession.events, runs);
-		fstest.record.SimulationLog.write(level, player, kind, anchor, realSession, cfg, snapshotSource, baseline, runs);
+		// In MTR mode the comparison reference is the baseline simulation's
+		// multi-tick stream (reality has no recording beyond the instant
+		// window); in instant mode it is the real recording itself.
+		List<FstEvent> reference = mtr ? baseline.events() : realSession.events;
+		ReportFormatter.report(player, kind, reference, runs, mtr);
+		fstest.record.SimulationLog.write(level, player, kind, anchor, realSession, cfg, snapshotSource,
+				baseline, runs, mtr, System.nanoTime() - analysisStart);
 	}
 
 	/**

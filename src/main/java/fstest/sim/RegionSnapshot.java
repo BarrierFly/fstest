@@ -1,5 +1,6 @@
 package fstest.sim;
 
+import fstest.config.FstestConfig;
 import fstest.mixin.LevelTicksAccessor;
 import fstest.mixin.ServerLevelBlockEventsAccessor;
 import it.unimi.dsi.fastutil.longs.Long2ObjectMap;
@@ -25,6 +26,10 @@ import java.util.Map;
  * Raw (untransformed, template-space relative) snapshot of the region around
  * a tested operation: block states, frozen block entity NBT, pre-existing
  * scheduled ticks / block events, and the real world's random sequence state.
+ *
+ * The region is either the anchor-centred range cube (instant mode and MTR
+ * mode without a selection) or the explicit {@link FstestConfig.Area} selection
+ * (MTR mode); block positions are stored relative to the anchor either way.
  */
 public final class RegionSnapshot
 {
@@ -32,6 +37,8 @@ public final class RegionSnapshot
 
 	public final BlockPos anchor;
 	public final int range;
+	/** Real-space selection rectangle; null = anchor-centred range cube. */
+	public final FstestConfig.Area area;
 	/** Relative positions -> states (air omitted). */
 	public final Map<BlockPos, BlockState> states = new HashMap<>();
 	/** Relative positions -> frozen BE NBT. */
@@ -42,36 +49,63 @@ public final class RegionSnapshot
 	public long realRandomSeed;
 	public boolean seedKnown;
 
+	/** Selection-space bounds, clamped to the dimension/world envelope (real coordinates). */
+	private final int minX;
 	private final int minY;
+	private final int minZ;
+	private final int maxX;
 	private final int maxY;
+	private final int maxZ;
 
-	private RegionSnapshot(BlockPos anchor, int range, int minY, int maxY)
+	private RegionSnapshot(BlockPos anchor, int range, FstestConfig.Area area,
+	                       int minX, int minY, int minZ, int maxX, int maxY, int maxZ)
 	{
 		this.anchor = anchor.immutable();
 		this.range = range;
+		this.area = area;
+		this.minX = minX;
 		this.minY = minY;
+		this.minZ = minZ;
+		this.maxX = maxX;
 		this.maxY = maxY;
+		this.maxZ = maxZ;
 	}
 
-	public boolean containsReal(BlockPos pos)
-	{
-		return Math.abs(pos.getX() - this.anchor.getX()) <= this.range
-				&& Math.abs(pos.getZ() - this.anchor.getZ()) <= this.range
-				&& pos.getY() >= this.minY && pos.getY() <= this.maxY;
-	}
-
+	/** Anchor-centred cube (instant window / MTR fallback). */
 	public static RegionSnapshot capture(ServerLevel level, MinecraftServer server, BlockPos anchor, int range)
 	{
 		DimensionType dim = level.dimensionType();
 		int minY = Math.max(dim.minY(), anchor.getY() - range);
 		int maxY = Math.min(dim.minY() + dim.height() - 1, anchor.getY() + range);
-		RegionSnapshot snap = new RegionSnapshot(anchor, range, minY, maxY);
-
 		int minX = Math.max(-WORLD_H_BOUND + 1, anchor.getX() - range);
 		int maxX = Math.min(WORLD_H_BOUND - 1, anchor.getX() + range);
 		int minZ = Math.max(-WORLD_H_BOUND + 1, anchor.getZ() - range);
 		int maxZ = Math.min(WORLD_H_BOUND - 1, anchor.getZ() + range);
+		return captureBoxed(level, server, anchor, range, null, minX, minY, minZ, maxX, maxY, maxZ);
+	}
 
+	/** Explicit area selection (MTR mode). The area is clamped to the dimension's legal envelope. */
+	public static RegionSnapshot capture(ServerLevel level, MinecraftServer server, BlockPos anchor, FstestConfig.Area area)
+	{
+		DimensionType dim = level.dimensionType();
+		int minY = Math.max(dim.minY(), area.pos1().getY());
+		int maxY = Math.min(dim.minY() + dim.height() - 1, area.pos2().getY());
+		int minX = Math.max(-WORLD_H_BOUND + 1, area.pos1().getX());
+		int maxX = Math.min(WORLD_H_BOUND - 1, area.pos2().getX());
+		int minZ = Math.max(-WORLD_H_BOUND + 1, area.pos1().getZ());
+		int maxZ = Math.min(WORLD_H_BOUND - 1, area.pos2().getZ());
+		if (minX > maxX || minZ > maxZ || minY > maxY)
+		{
+			throw new IllegalArgumentException("test area is empty after clamping to the dimension");
+		}
+		return captureBoxed(level, server, anchor, -1, area, minX, minY, minZ, maxX, maxY, maxZ);
+	}
+
+	private static RegionSnapshot captureBoxed(ServerLevel level, MinecraftServer server, BlockPos anchor,
+	                                           int range, FstestConfig.Area area,
+	                                           int minX, int minY, int minZ, int maxX, int maxY, int maxZ)
+	{
+		RegionSnapshot snap = new RegionSnapshot(anchor, range, area, minX, minY, minZ, maxX, maxY, maxZ);
 		for (int x = minX; x <= maxX; x++)
 		{
 			for (int z = minZ; z <= maxZ; z++)
@@ -104,6 +138,13 @@ public final class RegionSnapshot
 		snap.realRandomSeed = FstestSimWorld.tryCaptureRealRandomSeed(level);
 		snap.seedKnown = true; // best effort; an unreadable seed falls back to a fixed base
 		return snap;
+	}
+
+	public boolean containsReal(BlockPos pos)
+	{
+		return pos.getX() >= this.minX && pos.getX() <= this.maxX
+				&& pos.getZ() >= this.minZ && pos.getZ() <= this.maxZ
+				&& pos.getY() >= this.minY && pos.getY() <= this.maxY;
 	}
 
 	private static void copyScheduledTicks(ServerLevel level, RegionSnapshot snap)

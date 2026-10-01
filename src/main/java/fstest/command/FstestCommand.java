@@ -33,6 +33,10 @@ import java.util.Optional;
  * /fstest pstrategy <uniform|chunkborder|hashdelta>
  * /fstest updates <on|off>
  * /fstest duplications <on|off>
+ * /fstest mtr <ticks|off>
+ * /fstest mtrarea set <pos1> <pos2>
+ * /fstest mtrarea clear
+ * /fstest mtrarea query
  * /fstest targets add <color> <x> <y> <z>
  * /fstest targets remove <x> <y> <z>
  * /fstest targets remove color <color>
@@ -96,6 +100,22 @@ public final class FstestCommand
 						.executes(ctx -> usage(ctx, "fstest.duplications.usage"))
 						.then(toggleArgument().executes(ctx -> setDuplications(ctx,
 								StringArgumentType.getString(ctx, "value")))))
+				.then(Commands.literal("mtr")
+						.executes(ctx -> usage(ctx, "fstest.mtr.usage"))
+						.then(Commands.argument("value", StringArgumentType.word())
+								.suggests((ctx, builder) -> SharedSuggestionProvider.suggest(
+										List.of("off"), builder))
+								.executes(ctx -> setMtr(ctx, StringArgumentType.getString(ctx, "value")))))
+				.then(Commands.literal("mtrarea")
+						.executes(ctx -> usage(ctx, "fstest.mtrarea.usage"))
+						.then(Commands.literal("set")
+								.executes(ctx -> usage(ctx, "fstest.mtrarea.set.usage"))
+								.then(Commands.argument("pos1", BlockPosArgument.blockPos())
+										.executes(ctx -> usage(ctx, "fstest.mtrarea.set.usage"))
+										.then(Commands.argument("pos2", BlockPosArgument.blockPos())
+												.executes(FstestCommand::mtrAreaSet))))
+						.then(Commands.literal("clear").executes(FstestCommand::mtrAreaClear))
+						.then(Commands.literal("query").executes(FstestCommand::mtrAreaQuery)))
 				.then(Commands.literal("targets")
 						.executes(ctx -> usage(ctx, "fstest.targets.usage"))
 						.then(Commands.literal("add")
@@ -277,6 +297,66 @@ public final class FstestCommand
 		return ok(ctx, "fstest.duplications.set", toggleLabel(parsed));
 	}
 
+	private static int setMtr(CommandContext<CommandSourceStack> ctx, String value)
+	{
+		String normalized = value.trim().toLowerCase(Locale.ROOT);
+		if (normalized.equals("off") || normalized.equals("0"))
+		{
+			FstestConfig.INSTANCE.setMtrTicks(0);
+			return ok(ctx, "fstest.mtr.off");
+		}
+		int ticks;
+		try
+		{
+			ticks = Integer.parseInt(normalized);
+		}
+		catch (NumberFormatException e)
+		{
+			return fail(ctx, "fstest.mtr.usage");
+		}
+		if (!FstestConfig.INSTANCE.setMtrTicks(ticks))
+		{
+			return fail(ctx, "fstest.mtr.usage");
+		}
+		return ok(ctx, "fstest.mtr.set", yellow(String.valueOf(ticks)));
+	}
+
+	private static int mtrAreaSet(CommandContext<CommandSourceStack> ctx)
+	{
+		BlockPos pos1 = BlockPosArgument.getBlockPos(ctx, "pos1");
+		BlockPos pos2 = BlockPosArgument.getBlockPos(ctx, "pos2");
+		FstestConfig.Area area = FstestConfig.Area.of(pos1, pos2);
+		if (area.sideX() >= FstestConfig.MAX_AREA_SIDE || area.sideY() >= FstestConfig.MAX_AREA_SIDE
+				|| area.sideZ() >= FstestConfig.MAX_AREA_SIDE)
+		{
+			return fail(ctx, "fstest.mtrarea.too_large", yellow(String.valueOf(FstestConfig.MAX_AREA_SIDE)));
+		}
+		FstestConfig.INSTANCE.setMtrArea(area);
+		return ok(ctx, "fstest.mtrarea.set",
+				posText(area.pos1()), posText(area.pos2()));
+	}
+
+	private static int mtrAreaClear(CommandContext<CommandSourceStack> ctx)
+	{
+		if (FstestConfig.INSTANCE.mtrArea() == null)
+		{
+			return fail(ctx, "fstest.mtrarea.clear_empty");
+		}
+		FstestConfig.INSTANCE.setMtrArea(null);
+		return ok(ctx, "fstest.mtrarea.cleared");
+	}
+
+	private static int mtrAreaQuery(CommandContext<CommandSourceStack> ctx)
+	{
+		FstestConfig.Area area = FstestConfig.INSTANCE.mtrArea();
+		Component message = area == null
+				? Component.translatable("fstest.mtrarea.query.empty").withStyle(ChatFormatting.GRAY)
+				: Component.translatable("fstest.mtrarea.query.set",
+						posText(area.pos1()), posText(area.pos2())).withStyle(ChatFormatting.GOLD);
+		ctx.getSource().sendSuccess(() -> message, false);
+		return com.mojang.brigadier.Command.SINGLE_SUCCESS;
+	}
+
 	private static int targetsAdd(CommandContext<CommandSourceStack> ctx)
 	{
 		String colorArg = StringArgumentType.getString(ctx, "color");
@@ -380,6 +460,10 @@ public final class FstestCommand
 				.append(line("fstest.query.pstrategy", strategyLabel(cfg.strategy())))
 				.append(line("fstest.query.updates", toggleLabel(cfg.updates())))
 				.append(line("fstest.query.duplications", toggleLabel(cfg.duplications())))
+				.append(line("fstest.query.mtr", cfg.isMtrEnabled()
+						? yellow(cfg.mtrTicks() + " ticks")
+						: Component.translatable("fstest.toggle.off").withStyle(ChatFormatting.RED)))
+				.append(line("fstest.query.mtrarea", areaLabel(cfg.mtrArea())))
 				.append(line("fstest.query.targets", yellow(String.valueOf(cfg.targets().size()))));
 		ctx.getSource().sendSuccess(() -> message, false);
 		return com.mojang.brigadier.Command.SINGLE_SUCCESS;
@@ -414,6 +498,16 @@ public final class FstestCommand
 	private static Component posText(BlockPos pos)
 	{
 		return yellow(pos.getX() + " " + pos.getY() + " " + pos.getZ());
+	}
+
+	private static Component areaLabel(FstestConfig.Area area)
+	{
+		if (area == null)
+		{
+			return Component.translatable("fstest.mtrarea.query.empty").withStyle(ChatFormatting.GRAY);
+		}
+		return yellow(area.pos1().getX() + " " + area.pos1().getY() + " " + area.pos1().getZ()
+				+ " -> " + area.pos2().getX() + " " + area.pos2().getY() + " " + area.pos2().getZ());
 	}
 
 	private static Component yellow(String text)

@@ -120,13 +120,14 @@ public final class ReportFormatter
 	}
 
 	static void report(@Nullable ServerPlayer player, TriggerCapture.OpKind kind,
-	                   List<FstEvent> realEvents, List<ReplayEngine.RunOutcome> runs)
+	                   List<FstEvent> referenceEvents, List<ReplayEngine.RunOutcome> runs, boolean mtrMode)
 	{
-		Aggregation agg = aggregate(realEvents, runs);
+		Aggregation agg = aggregate(referenceEvents, runs);
 		List<Component> lines = new ArrayList<>();
-		lines.add(Component.translatable("fstest.report.header").withStyle(ChatFormatting.GOLD));
-		lines.add(Component.translatable("fstest.report.runs",
-				runs.size(), agg.identical(), realEvents.size()).withStyle(ChatFormatting.GRAY));
+		lines.add(Component.translatable(mtrMode ? "fstest.report.header.mtr" : "fstest.report.header")
+				.withStyle(ChatFormatting.GOLD));
+		lines.add(Component.translatable(mtrMode ? "fstest.report.runs.mtr" : "fstest.report.runs",
+				runs.size(), agg.identical(), referenceEvents.size()).withStyle(ChatFormatting.GRAY));
 
 		List<OutcomeAgg> sorted = new ArrayList<>(agg.outcomes().values());
 		sorted.sort(Comparator.comparingInt(OutcomeAgg::count).reversed());
@@ -151,41 +152,71 @@ public final class ReportFormatter
 
 		if (sorted.isEmpty())
 		{
-			lines.add(Component.translatable("fstest.report.all_match").withStyle(ChatFormatting.GREEN));
+			lines.add(Component.translatable(mtrMode ? "fstest.report.all_match.mtr" : "fstest.report.all_match")
+					.withStyle(ChatFormatting.GREEN));
 		}
 
 		deliver(player, lines, false);
 	}
 
+	/**
+	 * Appends the sample diff lines grouped by monitored position (the spec's
+	 * "grouped by marker block" output): a gray position header followed by the
+	 * +/- events recorded at that position. The overall line budget is
+	 * unchanged; overflow is reported as "(+N more)".
+	 */
 	private static void appendOps(List<Component> lines, DiffEngine.Diff diff)
 	{
 		int limit = MAX_OPS_PER_OUTCOME * 2;
-		int displayed = 0;
+		// encounter-ordered grouping: entries are "x y z | signature" display lines
+		Map<String, List<Component>> byPosition = new LinkedHashMap<>();
 		for (String plus : diff.plus())
 		{
-			if (displayed >= limit)
-			{
-				break;
-			}
-			lines.add(Component.literal("+ ").withStyle(ChatFormatting.AQUA)
-					.append(Component.literal(plus).withStyle(ChatFormatting.WHITE)));
-			displayed++;
+			byPosition.computeIfAbsent(positionOf(plus), k -> new ArrayList<>())
+					.add(Component.literal("+ ").withStyle(ChatFormatting.AQUA)
+							.append(Component.literal(plus).withStyle(ChatFormatting.WHITE)));
 		}
 		for (String minus : diff.minus())
 		{
+			byPosition.computeIfAbsent(positionOf(minus), k -> new ArrayList<>())
+					.add(Component.literal("- ").withStyle(ChatFormatting.RED)
+							.append(Component.literal(minus).withStyle(ChatFormatting.WHITE)));
+		}
+		int displayed = 0;
+		int entries = 0;
+		for (Map.Entry<String, List<Component>> entry : byPosition.entrySet())
+		{
 			if (displayed >= limit)
 			{
 				break;
 			}
-			lines.add(Component.literal("- ").withStyle(ChatFormatting.RED)
-					.append(Component.literal(minus).withStyle(ChatFormatting.WHITE)));
-			displayed++;
+			if (byPosition.size() > 1)
+			{
+				lines.add(Component.literal("@ " + entry.getKey()).withStyle(ChatFormatting.GRAY));
+			}
+			for (Component line : entry.getValue())
+			{
+				if (displayed >= limit)
+				{
+					break;
+				}
+				lines.add(line);
+				displayed++;
+			}
+			entries += entry.getValue().size();
 		}
-		int remaining = diff.plus().size() + diff.minus().size() - displayed;
+		int remaining = entries - displayed;
 		if (remaining > 0)
 		{
 			lines.add(Component.translatable("fstest.report.more", remaining).withStyle(ChatFormatting.DARK_GRAY));
 		}
+	}
+
+	/** Extracts the position prefix of a diff display line ("x y z | signature"). */
+	private static String positionOf(String displayLine)
+	{
+		int separator = displayLine.indexOf(" | ");
+		return separator >= 0 ? displayLine.substring(0, separator) : displayLine;
 	}
 
 	private static void deliver(@Nullable ServerPlayer player, List<Component> lines, boolean isError)
