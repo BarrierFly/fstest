@@ -78,6 +78,12 @@ public final class SimServer extends MinecraftServer
 	private static final int MAX_PROMOTION_ATTEMPTS = 400;
 	private static final int MAX_CHUNK_TASKS_PER_PUMP = 512;
 	private static final long TICK_BUDGET_NANOS = 50L * 1000L * 1000L;
+	/**
+	 * Fuse against runaway regions: forcing chunks allocates a ticket and a
+	 * chunk holder per chunk on the caller thread, so an oversized box would
+	 * freeze the server and exhaust the heap before the pump loop ever runs.
+	 */
+	private static final int MAX_FORCE_CHUNKS = 1024;
 
 	@Nullable
 	private static SimServer instance;
@@ -262,6 +268,14 @@ public final class SimServer extends MinecraftServer
 	{
 		ChunkPos cMin = new ChunkPos(min);
 		ChunkPos cMax = new ChunkPos(max);
+		long wanted = (long) (cMax.x - cMin.x + 1 + 2 * TICKING_MARGIN_CHUNKS)
+				* (cMax.z - cMin.z + 1 + 2 * TICKING_MARGIN_CHUNKS);
+		if (wanted > MAX_FORCE_CHUNKS)
+		{
+			throw new IllegalArgumentException("[fstest] refusing to force-load " + wanted
+					+ " chunks for region [" + cMin.x + ", " + cMin.z + "]..[" + cMax.x + ", " + cMax.z
+					+ "] (limit " + MAX_FORCE_CHUNKS + ")");
+		}
 		for (int cx = cMin.x - TICKING_MARGIN_CHUNKS; cx <= cMax.x + TICKING_MARGIN_CHUNKS; cx++)
 		{
 			for (int cz = cMin.z - TICKING_MARGIN_CHUNKS; cz <= cMax.z + TICKING_MARGIN_CHUNKS; cz++)

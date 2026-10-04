@@ -82,12 +82,15 @@ public final class TimedReplayEngine
 		BlockPos simMin = minOf(cornerA, cornerB);
 		BlockPos simMax = maxOf(cornerA, cornerB);
 
-		// force chunks for the union of the previous run's box (to be cleared) and the new box
+		// Force-load only the new box (+ margin). The previous run's box is
+		// cleared separately below: its chunks stay ticket-held until the
+		// analysis ends (finishAnalysis), so they never need re-loading here -
+		// and the AABB union of two distant P/PD boxes would force-load every
+		// chunk in between, which for dimension-wide offsets is billions of
+		// chunks (the heap-exhausting freeze this replaces).
+		simServer.forceAndPump(level, simMin, simMax);
 		BlockPos clearMin = level.fstest$lastClearedMin();
 		BlockPos clearMax = level.fstest$lastClearedMax();
-		BlockPos unionMin = clearMin == null ? simMin : minOf(minOf(clearMin, simMin), simMin);
-		BlockPos unionMax = clearMax == null ? simMax : maxOf(maxOf(clearMax, simMax), simMax);
-		simServer.forceAndPump(level, unionMin, unionMax);
 		if (clearMin != null)
 		{
 			level.fstest$clearBox(clearMin, clearMax);
