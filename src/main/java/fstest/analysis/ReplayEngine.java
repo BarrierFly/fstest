@@ -90,11 +90,10 @@ public final class ReplayEngine
 	}
 
 	public static RunOutcome run(ServerLevel real, MinecraftServer server, RegionSnapshot snapshot,
-	                             Symmetry symmetry, BlockPos offset, String label, CaptureSession realSession,
-	                             int simTicks)
+	                             Symmetry symmetry, BlockPos offset, String label, CaptureSession realSession)
 	{
 		long startNanos = System.nanoTime();
-		FstestSimWorld world = buildWorld(real, server, snapshot, symmetry, offset, simTicks);
+		FstestSimWorld world = buildWorld(real, server, snapshot, symmetry, offset);
 		world.setRemovalSideEffects(buildRemovalSideEffects(snapshot.anchor, offset, symmetry, realSession));
 		CaptureSession session = RecorderHub.push(world);
 		// Share the real session's wool-subscription decisions with the simulated
@@ -162,40 +161,19 @@ public final class ReplayEngine
 				cursor++;
 			}
 			reconcileCreations(snapshot, symmetry, offset, world, session, realSession);
-			// MTR mode: after the operation replay (and the scheduled-tick backfill),
-			// the simulated space actually runs the requested number of game ticks -
-			// scheduled ticks, block events and block entities execute here, none of
-			// it ever touching the real world. The event count after each tick is
-			// recorded so the text log can break the stream down per tick.
+			// Instant mode never executes ticks; the multi-tick stream is the
+			// timed engine's (TimedReplayEngine, real ServerLevel) job.
 			int preTickEvents = session.events.size();
-			List<Integer> tickBoundaries = new ArrayList<>();
-			if (simTicks > 0)
-			{
-				world.runSimTicks(simTicks, () -> {
-					tickBoundaries.add(session.events.size());
-					return 0;
-				});
-			}
 			// mismatch positions are reported in real coordinates, like every other
 			// event in the log, so they line up with the device the user built
 			List<BlockPos> sideEffectMismatches = world.sideEffectContextMismatches().stream()
 					.map(p -> mapPosInverse(p, snapshot.anchor, offset, symmetry))
 					.toList();
-			ReplayEngine.SimPhaseStats simPhase = simTicks > 0
-					? new ReplayEngine.SimPhaseStats(tickBoundaries.size(),
-							(int) Math.min(Integer.MAX_VALUE, world.unexecutedBlockTicks()),
-							(int) Math.min(Integer.MAX_VALUE, world.unexecutedFluidTicks()),
-							(int) Math.min(Integer.MAX_VALUE, world.executedBlockEvents()),
-							(int) Math.min(Integer.MAX_VALUE, world.tickFailures()),
-							world.unexecutedPositions().stream()
-									.map(p -> mapPosInverse(p, snapshot.anchor, offset, symmetry))
-									.toList())
-					: ReplayEngine.SimPhaseStats.NONE;
 			RunStats stats = new RunStats(rootsApplied, realSession.rootChanges.size(),
 					world.setBlockCalls(), world.neighborUpdateDispatches(),
 					session.createdBlockEvents.size(), session.createdTicks.size(), session.events.size(),
 					sideEffectMismatches,
-					System.nanoTime() - startNanos, preTickEvents, List.copyOf(tickBoundaries), simPhase);
+					System.nanoTime() - startNanos, preTickEvents, List.of(), ReplayEngine.SimPhaseStats.NONE);
 			// Simulated events live in simulation space (transformed positions,
 			// directions and states); map them back onto real coordinates so every
 			// run can be diffed against the real stream directly.
@@ -212,7 +190,7 @@ public final class ReplayEngine
 	 * inverse-transforms the directions/states they carry) by applying the
 	 * inverse of the transform that produced the simulated space.
 	 */
-	private static List<FstEvent> canonicalize(List<FstEvent> events, BlockPos anchor, BlockPos offset, Symmetry symmetry)
+	static List<FstEvent> canonicalize(List<FstEvent> events, BlockPos anchor, BlockPos offset, Symmetry symmetry)
 	{
 		if (symmetry.equals(Symmetry.IDENTITY) && offset.equals(BlockPos.ZERO))
 		{
@@ -296,7 +274,7 @@ public final class ReplayEngine
 	}
 
 	/** Inverse of {@link #mapPos}: simulation position -> real position. */
-	private static BlockPos mapPosInverse(BlockPos simPos, BlockPos anchor, BlockPos offset, Symmetry symmetry)
+	static BlockPos mapPosInverse(BlockPos simPos, BlockPos anchor, BlockPos offset, Symmetry symmetry)
 	{
 		BlockPos rel = new BlockPos(
 				simPos.getX() - anchor.getX() - offset.getX(),
@@ -324,7 +302,7 @@ public final class ReplayEngine
 	}
 
 	private static FstestSimWorld buildWorld(ServerLevel real, MinecraftServer server, RegionSnapshot snap,
-	                                         Symmetry symmetry, BlockPos offset, int simTicks)
+	                                         Symmetry symmetry, BlockPos offset)
 	{
 		SimLevelData data = new SimLevelData(real.getLevelData(), real.getGameRules(), real.enabledFeatures());
 		FstestSimWorld world = new FstestSimWorld(real, server, data, real.dimensionTypeRegistration(), real.dimension());
@@ -334,43 +312,6 @@ public final class ReplayEngine
 		{
 			world.storeState(mapRelPos(snap.anchor, offset, symmetry, entry.getKey()),
 					symmetry.applyToState(entry.getValue()));
-		}
-
-		// MTR mode runs cascades that may expand into air-only regions of the
-		// captured area; grow the envelope to the full transformed region so
-		// those positions read as air instead of void air. Instant mode keeps
-		// its established behaviour (envelope = stored non-air bounds).
-		if (simTicks > 0)
-		{
-			BlockPos relMin = RegionSnapshot.subtract(
-					snap.area != null ? snap.area.pos1() : snap.anchor.offset(-snap.range, -snap.range, -snap.range),
-					snap.anchor);
-			BlockPos relMax = RegionSnapshot.subtract(
-					snap.area != null ? snap.area.pos2() : snap.anchor.offset(snap.range, snap.range, snap.range),
-					snap.anchor);
-			BlockPos[] corners = {
-					new BlockPos(relMin.getX(), relMin.getY(), relMin.getZ()),
-					new BlockPos(relMin.getX(), relMin.getY(), relMax.getZ()),
-					new BlockPos(relMin.getX(), relMax.getY(), relMin.getZ()),
-					new BlockPos(relMax.getX(), relMin.getY(), relMin.getZ()),
-					new BlockPos(relMin.getX(), relMax.getY(), relMax.getZ()),
-					new BlockPos(relMax.getX(), relMin.getY(), relMax.getZ()),
-					new BlockPos(relMax.getX(), relMax.getY(), relMin.getZ()),
-					new BlockPos(relMax.getX(), relMax.getY(), relMax.getZ()),
-			};
-			int minX = Integer.MAX_VALUE, minY = Integer.MAX_VALUE, minZ = Integer.MAX_VALUE;
-			int maxX = Integer.MIN_VALUE, maxY = Integer.MIN_VALUE, maxZ = Integer.MIN_VALUE;
-			for (BlockPos corner : corners)
-			{
-				BlockPos mapped = mapRelPos(snap.anchor, offset, symmetry, corner);
-				minX = Math.min(minX, mapped.getX());
-				minY = Math.min(minY, mapped.getY());
-				minZ = Math.min(minZ, mapped.getZ());
-				maxX = Math.max(maxX, mapped.getX());
-				maxY = Math.max(maxY, mapped.getY());
-				maxZ = Math.max(maxZ, mapped.getZ());
-			}
-			world.growEnvelopeTo(new BlockPos(minX, minY, minZ), new BlockPos(maxX, maxY, maxZ));
 		}
 
 		for (Map.Entry<BlockPos, CompoundTag> entry : snap.blockEntities.entrySet())

@@ -48,6 +48,9 @@ public final class RegionSnapshot
 	public final List<BlockEventData> blockEvents = new ArrayList<>();
 	public long realRandomSeed;
 	public boolean seedKnown;
+	/** Real world's game/day time at snapshot time (the simulated clock starts here). */
+	public final long gameTime;
+	public final long dayTime;
 
 	/** Selection-space bounds, clamped to the dimension/world envelope (real coordinates). */
 	private final int minX;
@@ -58,11 +61,14 @@ public final class RegionSnapshot
 	private final int maxZ;
 
 	private RegionSnapshot(BlockPos anchor, int range, FstestConfig.Area area,
-	                       int minX, int minY, int minZ, int maxX, int maxY, int maxZ)
+	                       int minX, int minY, int minZ, int maxX, int maxY, int maxZ,
+	                       long gameTime, long dayTime)
 	{
 		this.anchor = anchor.immutable();
 		this.range = range;
 		this.area = area;
+		this.gameTime = gameTime;
+		this.dayTime = dayTime;
 		this.minX = minX;
 		this.minY = minY;
 		this.minZ = minZ;
@@ -81,7 +87,8 @@ public final class RegionSnapshot
 		int maxX = Math.min(WORLD_H_BOUND - 1, anchor.getX() + range);
 		int minZ = Math.max(-WORLD_H_BOUND + 1, anchor.getZ() - range);
 		int maxZ = Math.min(WORLD_H_BOUND - 1, anchor.getZ() + range);
-		return captureBoxed(level, server, anchor, range, null, minX, minY, minZ, maxX, maxY, maxZ);
+		return captureBoxed(level, server, anchor, range, null, minX, minY, minZ, maxX, maxY, maxZ,
+				level.getGameTime(), level.getDayTime());
 	}
 
 	/** Explicit area selection (MTR mode). The area is clamped to the dimension's legal envelope. */
@@ -98,14 +105,17 @@ public final class RegionSnapshot
 		{
 			throw new IllegalArgumentException("test area is empty after clamping to the dimension");
 		}
-		return captureBoxed(level, server, anchor, -1, area, minX, minY, minZ, maxX, maxY, maxZ);
+		return captureBoxed(level, server, anchor, -1, area, minX, minY, minZ, maxX, maxY, maxZ,
+				level.getGameTime(), level.getDayTime());
 	}
 
 	private static RegionSnapshot captureBoxed(ServerLevel level, MinecraftServer server, BlockPos anchor,
 	                                           int range, FstestConfig.Area area,
-	                                           int minX, int minY, int minZ, int maxX, int maxY, int maxZ)
+	                                           int minX, int minY, int minZ, int maxX, int maxY, int maxZ,
+	                                           long gameTime, long dayTime)
 	{
-		RegionSnapshot snap = new RegionSnapshot(anchor, range, area, minX, minY, minZ, maxX, maxY, maxZ);
+		RegionSnapshot snap = new RegionSnapshot(anchor, range, area, minX, minY, minZ, maxX, maxY, maxZ,
+				gameTime, dayTime);
 		for (int x = minX; x <= maxX; x++)
 		{
 			for (int z = minZ; z <= maxZ; z++)
@@ -138,6 +148,18 @@ public final class RegionSnapshot
 		snap.realRandomSeed = FstestSimWorld.tryCaptureRealRandomSeed(level);
 		snap.seedKnown = true; // best effort; an unreadable seed falls back to a fixed base
 		return snap;
+	}
+
+	/** Real-space (clamped) lower corner of the captured region. */
+	public BlockPos boundsMin()
+	{
+		return new BlockPos(this.minX, this.minY, this.minZ);
+	}
+
+	/** Real-space (clamped) upper corner of the captured region. */
+	public BlockPos boundsMax()
+	{
+		return new BlockPos(this.maxX, this.maxY, this.maxZ);
 	}
 
 	public boolean containsReal(BlockPos pos)

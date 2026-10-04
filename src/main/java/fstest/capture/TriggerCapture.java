@@ -114,13 +114,11 @@ public final class TriggerCapture
 		try
 		{
 			FstestConfig cfg = FstestConfig.INSTANCE;
-			// MTR mode with an explicit selection snapshots exactly that area;
-			// everything else uses the anchor-centred range cube
-			if (cfg.isMtrEnabled() && cfg.mtrArea() != null)
-			{
-				return RegionSnapshot.capture(world, world.getServer(), anchor, cfg.mtrArea());
-			}
-			return RegionSnapshot.capture(world, world.getServer(), anchor, cfg.effectiveRange());
+			// scope: a named test area takes precedence over the numeric radius
+			return cfg.scopedArea()
+					.map(area -> RegionSnapshot.capture(world, world.getServer(), anchor, area))
+					.orElseGet(() -> RegionSnapshot.capture(world, world.getServer(), anchor,
+							cfg.effectiveRange()));
 		}
 		catch (Throwable t)
 		{

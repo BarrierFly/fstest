@@ -70,7 +70,7 @@ public final class FstestPersistence
 		cfg.setLoading(true);
 		try
 		{
-			FstestMode mode = parseEnum(json, "mode", FstestMode.class, null);
+			FstestMode mode = parseEnum(json, "mode", FstestMode.class);
 			if (mode != null)
 			{
 				cfg.setMode(mode);
@@ -84,7 +84,7 @@ public final class FstestPersistence
 			cfg.setCount("p", getInt(json, "countP", cfg.countP(), 0, Integer.MAX_VALUE));
 			cfg.setCount("pd", getInt(json, "countPd", cfg.countPd(), 0, Integer.MAX_VALUE));
 			cfg.setRange(getInt(json, "range", cfg.range(), -1, FstestConfig.MAX_RANGE));
-			PStrategy strategy = parseEnum(json, "pstrategy", PStrategy.class, null);
+			PStrategy strategy = parseEnum(json, "pstrategy", PStrategy.class);
 			if (strategy != null && strategy != PStrategy.HASH_DELTA)
 			{
 				cfg.setStrategy(strategy);
@@ -99,12 +99,18 @@ public final class FstestPersistence
 			{
 				cfg.setDuplications(duplications);
 			}
-			cfg.setMtrTicks(getInt(json, "mtrTicks", 0, 0, FstestConfig.MAX_MTR_TICKS));
-			FstestConfig.Area area = getArea(json);
-			if (area != null)
+			FstestSimMode simMode = parseEnum(json, "simMode", FstestSimMode.class);
+			if (simMode != null)
 			{
-				cfg.setMtrArea(area);
+				cfg.setSimMode(simMode);
 			}
+			cfg.setSimTicks(getInt(json, "simTicks", cfg.simTicks(), 1, FstestConfig.MAX_SIM_TICKS));
+			JsonElement scopeArea = json.get("scopeArea");
+			if (scopeArea != null && scopeArea.isJsonPrimitive() && !scopeArea.getAsString().isBlank())
+			{
+				cfg.setScopeArea(scopeArea.getAsString().trim());
+			}
+			loadAreas(cfg, json);
 			loadTargets(cfg, json);
 		}
 		finally
@@ -126,19 +132,23 @@ public final class FstestPersistence
 		json.addProperty("pstrategy", cfg.strategy().name());
 		json.addProperty("updates", cfg.updates());
 		json.addProperty("duplications", cfg.duplications());
-		json.addProperty("mtrTicks", cfg.mtrTicks());
-		FstestConfig.Area area = cfg.mtrArea();
-		if (area != null)
+		json.addProperty("simMode", cfg.simMode().name());
+		json.addProperty("simTicks", cfg.simTicks());
+		json.addProperty("scopeArea", cfg.scopeArea());
+		JsonArray areas = new JsonArray();
+		for (Map.Entry<String, FstestConfig.Area> entry : cfg.areas().entrySet())
 		{
 			JsonObject a = new JsonObject();
-			a.addProperty("x1", area.pos1().getX());
-			a.addProperty("y1", area.pos1().getY());
-			a.addProperty("z1", area.pos1().getZ());
-			a.addProperty("x2", area.pos2().getX());
-			a.addProperty("y2", area.pos2().getY());
-			a.addProperty("z2", area.pos2().getZ());
-			json.add("mtrArea", a);
+			a.addProperty("name", entry.getKey());
+			a.addProperty("x1", entry.getValue().pos1().getX());
+			a.addProperty("y1", entry.getValue().pos1().getY());
+			a.addProperty("z1", entry.getValue().pos1().getZ());
+			a.addProperty("x2", entry.getValue().pos2().getX());
+			a.addProperty("y2", entry.getValue().pos2().getY());
+			a.addProperty("z2", entry.getValue().pos2().getZ());
+			areas.add(a);
 		}
+		json.add("areas", areas);
 		JsonArray targets = new JsonArray();
 		for (Map.Entry<BlockPos, DyeColor> entry : cfg.targets().entrySet())
 		{
@@ -163,12 +173,12 @@ public final class FstestPersistence
 		}
 	}
 
-	private static <E extends Enum<E>> E parseEnum(JsonObject json, String key, Class<E> type, E fallback)
+	private static <E extends Enum<E>> E parseEnum(JsonObject json, String key, Class<E> type)
 	{
 		JsonElement element = json.get(key);
 		if (element == null || !element.isJsonPrimitive())
 		{
-			return fallback;
+			return null;
 		}
 		try
 		{
@@ -177,7 +187,7 @@ public final class FstestPersistence
 		catch (IllegalArgumentException e)
 		{
 			FstestMod.LOGGER.warn("[fstest] config key '{}' has invalid value '{}'; using default", key, element.getAsString());
-			return fallback;
+			return null;
 		}
 	}
 
@@ -241,29 +251,31 @@ public final class FstestPersistence
 		}
 	}
 
-	private static FstestConfig.Area getArea(JsonObject json)
+	private static void loadAreas(FstestConfig cfg, JsonObject json)
 	{
-		JsonElement element = json.get("mtrArea");
-		if (element == null || element.isJsonNull())
+		JsonElement element = json.get("areas");
+		if (element == null || !element.isJsonArray())
 		{
-			return null;
+			return;
 		}
-		if (!element.isJsonObject())
+		for (JsonElement item : element.getAsJsonArray())
 		{
-			FstestMod.LOGGER.warn("[fstest] config key 'mtrArea' is malformed; ignoring");
-			return null;
-		}
-		JsonObject a = element.getAsJsonObject();
-		try
-		{
-			return FstestConfig.Area.of(
-					new BlockPos(a.get("x1").getAsInt(), a.get("y1").getAsInt(), a.get("z1").getAsInt()),
-					new BlockPos(a.get("x2").getAsInt(), a.get("y2").getAsInt(), a.get("z2").getAsInt()));
-		}
-		catch (Exception e)
-		{
-			FstestMod.LOGGER.warn("[fstest] config key 'mtrArea' is malformed; ignoring", e);
-			return null;
+			try
+			{
+				JsonObject a = item.getAsJsonObject();
+				String name = a.get("name").getAsString().trim();
+				if (name.isEmpty())
+				{
+					throw new IllegalArgumentException("empty area name");
+				}
+				cfg.putArea(name, FstestConfig.Area.of(
+						new BlockPos(a.get("x1").getAsInt(), a.get("y1").getAsInt(), a.get("z1").getAsInt()),
+						new BlockPos(a.get("x2").getAsInt(), a.get("y2").getAsInt(), a.get("z2").getAsInt())));
+			}
+			catch (Exception e)
+			{
+				FstestMod.LOGGER.warn("[fstest] config 'areas' entry is malformed; skipping", e);
+			}
 		}
 	}
 

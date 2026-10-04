@@ -1,5 +1,6 @@
 package fstest.analysis;
 
+import fstest.analysis.ReplayEngine.RunOutcome;
 import fstest.capture.TriggerCapture;
 import fstest.config.FstestConfig;
 import fstest.record.CaptureSession;
@@ -70,14 +71,8 @@ public final class FstestAnalysis
 			return;
 		}
 
-		int simTicks = cfg.mtrTicks();
-		boolean mtr = cfg.isMtrEnabled();
-		if (mtr && cfg.mtrArea() == null)
-		{
-			// zero-config fallback: the anchor-centred range cube bounds the
-			// multi-tick simulation just as it bounds the instant window
-			ReportFormatter.message(player, "fstest.analysis.mtr_no_area");
-		}
+		boolean timed = cfg.isTimed();
+		int simTicks = timed ? cfg.simTicks() : 0;
 
 		long analysisStart = System.nanoTime();
 		RegionSnapshot snapshot;
@@ -86,20 +81,19 @@ public final class FstestAnalysis
 			// Must be pre-operation: the replay re-applies the operation's root
 			// setBlocks, which only mutate anything against the state as it was
 			// before the operation ran. The lazy capture fires at the window's
-			// first root change (and already honours the MTR area selection);
+			// first root change (and already honours the scope selection);
 			// the fallback here only covers ops that never reached one (nothing
 			// to replay) or a failed pre-capture.
 			if (preOpSnapshot != null)
 			{
 				snapshot = preOpSnapshot;
 			}
-			else if (mtr && cfg.mtrArea() != null)
-			{
-				snapshot = RegionSnapshot.capture(level, server, anchor, cfg.mtrArea());
-			}
 			else
 			{
-				snapshot = RegionSnapshot.capture(level, server, anchor, cfg.effectiveRange());
+				// scope: a named test area takes precedence over the radius
+				snapshot = cfg.scopedArea()
+						.map(area -> RegionSnapshot.capture(level, server, anchor, area))
+						.orElseGet(() -> RegionSnapshot.capture(level, server, anchor, cfg.effectiveRange()));
 			}
 		}
 		catch (Throwable t)
@@ -113,77 +107,101 @@ public final class FstestAnalysis
 		Progress progress = new Progress(player, plannedExecutions(cfg));
 		progress.start();
 
-		// Baseline self-check: the identity transform must reproduce reality
-		// bit-for-bit over the instant window, otherwise the simulator is
-		// distorted and comparison output would be meaningless.
-		ReplayEngine.RunOutcome baseline = ReplayEngine.run(level, server, snapshot,
-				Symmetry.IDENTITY, BlockPos.ZERO, "baseline", realSession, simTicks);
-		progress.tick();
-		List<FstEvent> baselineInstant = mtr
-				? baseline.events().subList(0, baseline.stats().preTickEvents())
-				: baseline.events();
-		DiffEngine.Diff baselineDiff = DiffEngine.diff(realSession.events, baselineInstant);
-		if (!baselineDiff.isEmpty())
+		try
 		{
-			fstest.record.SimulationLog.write(level, player, kind, anchor, realSession, cfg, snapshotSource,
-					baseline, List.of(), mtr, System.nanoTime() - analysisStart);
-			ReportFormatter.reportDistortion(player, baselineDiff);
-			return;
-		}
-
-		List<ReplayEngine.RunOutcome> runs = new ArrayList<>();
-		RandomSource rng = RandomSource.create(seedFor(level, anchor));
-		DimensionType dim = level.dimensionType();
-
-		if (cfg.mode().testsDirectionality())
-		{
-			for (Symmetry symmetry : Symmetry.fullSet())
+			// Baseline self-check: the identity transform must reproduce reality
+			// bit-for-bit over the instant window, otherwise the simulator is
+			// distorted and comparison output would be meaningless.
+			RunOutcome baseline = timed
+					? TimedReplayEngine.run(level, server, snapshot,
+							Symmetry.IDENTITY, BlockPos.ZERO, "baseline", realSession, simTicks)
+					: ReplayEngine.run(level, server, snapshot,
+							Symmetry.IDENTITY, BlockPos.ZERO, "baseline", realSession);
+			progress.tick();
+			List<FstEvent> baselineInstant = timed
+					? baseline.events().subList(0, baseline.stats().preTickEvents())
+					: baseline.events();
+			DiffEngine.Diff baselineDiff = DiffEngine.diff(realSession.events, baselineInstant);
+			if (!baselineDiff.isEmpty())
 			{
-				if (symmetry == Symmetry.IDENTITY)
+				fstest.record.SimulationLog.write(level, player, kind, anchor, realSession, cfg, snapshotSource,
+						baseline, List.of(), timed, System.nanoTime() - analysisStart);
+				ReportFormatter.reportDistortion(player, baselineDiff);
+				return;
+			}
+
+			List<ReplayEngine.RunOutcome> runs = new ArrayList<>();
+			RandomSource rng = RandomSource.create(seedFor(level, anchor));
+			DimensionType dim = level.dimensionType();
+
+			if (cfg.mode().testsDirectionality())
+			{
+				for (Symmetry symmetry : Symmetry.fullSet())
 				{
-					runs.add(baseline); // reuse - identical transform
-					continue;
+					if (symmetry == Symmetry.IDENTITY)
+					{
+						runs.add(baseline); // reuse - identical transform
+						continue;
+					}
+					for (int i = 0; i < cfg.countD(); i++)
+					{
+						runs.add(runOne(level, server, snapshot, symmetry, BlockPos.ZERO,
+								symmetry.label(), realSession, timed, simTicks));
+						progress.tick();
+					}
 				}
-				for (int i = 0; i < cfg.countD(); i++)
+			}
+
+			if (cfg.mode().testsPositionality())
+			{
+				for (int i = 0; i < cfg.countP(); i++)
 				{
-					runs.add(ReplayEngine.run(level, server, snapshot, symmetry, BlockPos.ZERO,
-							symmetry.label(), realSession, simTicks));
+					BlockPos offset = OffsetSampler.sample(cfg.strategy(), rng, dim, anchor);
+					runs.add(runOne(level, server, snapshot, Symmetry.IDENTITY, offset,
+							"P#" + (i + 1), realSession, timed, simTicks));
 					progress.tick();
 				}
 			}
-		}
 
-		if (cfg.mode().testsPositionality())
-		{
-			for (int i = 0; i < cfg.countP(); i++)
+			if (cfg.mode() == fstest.config.FstestMode.BOTH)
 			{
-				BlockPos offset = OffsetSampler.sample(cfg.strategy(), rng, dim, anchor);
-				runs.add(ReplayEngine.run(level, server, snapshot, Symmetry.IDENTITY, offset,
-						"P#" + (i + 1), realSession, simTicks));
-				progress.tick();
+				Symmetry[] set = Symmetry.fullSet();
+				for (int i = 0; i < cfg.countPd(); i++)
+				{
+					Symmetry symmetry = set[rng.nextInt(set.length)];
+					BlockPos offset = OffsetSampler.sample(cfg.strategy(), rng, dim, anchor);
+					runs.add(runOne(level, server, snapshot, symmetry, offset,
+							"PD#" + (i + 1), realSession, timed, simTicks));
+					progress.tick();
+				}
+			}
+
+			// In timed mode the comparison reference is the baseline simulation's
+			// multi-tick stream (reality has no recording beyond the instant
+			// window); in instant mode it is the real recording itself.
+			List<FstEvent> reference = timed ? baseline.events() : realSession.events;
+			ReportFormatter.report(player, kind, reference, runs, timed);
+			fstest.record.SimulationLog.write(level, player, kind, anchor, realSession, cfg, snapshotSource,
+					baseline, runs, timed, System.nanoTime() - analysisStart);
+		}
+		finally
+		{
+			// timed mode: release the chunk tickets the simulated runs took
+			if (timed)
+			{
+				TimedReplayEngine.finishAnalysis();
 			}
 		}
+	}
 
-		if (cfg.mode() == fstest.config.FstestMode.BOTH)
-		{
-			Symmetry[] set = Symmetry.fullSet();
-			for (int i = 0; i < cfg.countPd(); i++)
-			{
-				Symmetry symmetry = set[rng.nextInt(set.length)];
-				BlockPos offset = OffsetSampler.sample(cfg.strategy(), rng, dim, anchor);
-				runs.add(ReplayEngine.run(level, server, snapshot, symmetry, offset,
-						"PD#" + (i + 1), realSession, simTicks));
-				progress.tick();
-			}
-		}
-
-		// In MTR mode the comparison reference is the baseline simulation's
-		// multi-tick stream (reality has no recording beyond the instant
-		// window); in instant mode it is the real recording itself.
-		List<FstEvent> reference = mtr ? baseline.events() : realSession.events;
-		ReportFormatter.report(player, kind, reference, runs, mtr);
-		fstest.record.SimulationLog.write(level, player, kind, anchor, realSession, cfg, snapshotSource,
-				baseline, runs, mtr, System.nanoTime() - analysisStart);
+	/** Dispatches one replay run to the timed engine (real ServerLevel) or the instant engine (chunkless). */
+	private static ReplayEngine.RunOutcome runOne(ServerLevel level, MinecraftServer server, RegionSnapshot snapshot,
+	                                              Symmetry symmetry, BlockPos offset, String label,
+	                                              CaptureSession realSession, boolean timed, int simTicks)
+	{
+		return timed
+				? TimedReplayEngine.run(level, server, snapshot, symmetry, offset, label, realSession, simTicks)
+				: ReplayEngine.run(level, server, snapshot, symmetry, offset, label, realSession);
 	}
 
 	/**

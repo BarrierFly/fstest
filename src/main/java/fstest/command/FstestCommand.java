@@ -7,6 +7,7 @@ import com.mojang.brigadier.builder.LiteralArgumentBuilder;
 import com.mojang.brigadier.context.CommandContext;
 import fstest.config.FstestConfig;
 import fstest.config.FstestMode;
+import fstest.config.FstestSimMode;
 import fstest.config.PStrategy;
 import net.minecraft.ChatFormatting;
 import net.minecraft.commands.CommandSourceStack;
@@ -33,10 +34,13 @@ import java.util.Optional;
  * /fstest pstrategy <uniform|chunkborder|hashdelta>
  * /fstest updates <on|off>
  * /fstest duplications <on|off>
- * /fstest mtr <ticks|off>
- * /fstest mtrarea set <pos1> <pos2>
+ * /fstest sim <instant|timed>
+ * /fstest simticks <n>
+ * /fstest scope <unlimited|r|area-name>   (alias: /fstest range)
+ * /fstest mtrarea add <name> <pos1> <pos2>
+ * /fstest mtrarea remove <name>
+ * /fstest mtrarea list
  * /fstest mtrarea clear
- * /fstest mtrarea query
  * /fstest targets add <color> <x> <y> <z>
  * /fstest targets remove <x> <y> <z>
  * /fstest targets remove color <color>
@@ -80,12 +84,6 @@ public final class FstestCommand
 										.executes(ctx -> setCount(ctx,
 												StringArgumentType.getString(ctx, "which"),
 												IntegerArgumentType.getInteger(ctx, "n"))))))
-				.then(Commands.literal("range")
-						.executes(ctx -> usage(ctx, "fstest.range.usage"))
-						.then(Commands.argument("value", StringArgumentType.word())
-								.suggests((ctx, builder) -> SharedSuggestionProvider.suggest(
-										List.of("unlimited"), builder))
-								.executes(ctx -> setRange(ctx, StringArgumentType.getString(ctx, "value")))))
 				.then(Commands.literal("pstrategy")
 						.executes(ctx -> usage(ctx, "fstest.pstrategy.usage"))
 						.then(Commands.argument("value", StringArgumentType.word())
@@ -100,22 +98,42 @@ public final class FstestCommand
 						.executes(ctx -> usage(ctx, "fstest.duplications.usage"))
 						.then(toggleArgument().executes(ctx -> setDuplications(ctx,
 								StringArgumentType.getString(ctx, "value")))))
-				.then(Commands.literal("mtr")
-						.executes(ctx -> usage(ctx, "fstest.mtr.usage"))
+				.then(Commands.literal("sim")
+						.executes(ctx -> usage(ctx, "fstest.sim.usage"))
 						.then(Commands.argument("value", StringArgumentType.word())
 								.suggests((ctx, builder) -> SharedSuggestionProvider.suggest(
-										List.of("off"), builder))
-								.executes(ctx -> setMtr(ctx, StringArgumentType.getString(ctx, "value")))))
+										List.of("instant", "timed"), builder))
+								.executes(ctx -> setSim(ctx, StringArgumentType.getString(ctx, "value")))))
+				.then(Commands.literal("simticks")
+						.executes(ctx -> usage(ctx, "fstest.simticks.usage"))
+						.then(Commands.argument("ticks", IntegerArgumentType.integer(1, FstestConfig.MAX_SIM_TICKS))
+								.executes(ctx -> setSimTicks(ctx, IntegerArgumentType.getInteger(ctx, "ticks")))))
+				.then(Commands.literal("scope")
+						.executes(ctx -> usage(ctx, "fstest.scope.usage"))
+						.then(Commands.argument("value", StringArgumentType.word())
+								.suggests((ctx, builder) -> SharedSuggestionProvider.suggest(
+										scopeSuggestions(), builder))
+								.executes(ctx -> setScope(ctx, StringArgumentType.getString(ctx, "value")))))
 				.then(Commands.literal("mtrarea")
 						.executes(ctx -> usage(ctx, "fstest.mtrarea.usage"))
-						.then(Commands.literal("set")
-								.executes(ctx -> usage(ctx, "fstest.mtrarea.set.usage"))
-								.then(Commands.argument("pos1", BlockPosArgument.blockPos())
-										.executes(ctx -> usage(ctx, "fstest.mtrarea.set.usage"))
-										.then(Commands.argument("pos2", BlockPosArgument.blockPos())
-												.executes(FstestCommand::mtrAreaSet))))
-						.then(Commands.literal("clear").executes(FstestCommand::mtrAreaClear))
-						.then(Commands.literal("query").executes(FstestCommand::mtrAreaQuery)))
+						.then(Commands.literal("add")
+								.executes(ctx -> usage(ctx, "fstest.mtrarea.add.usage"))
+								.then(Commands.argument("name", StringArgumentType.word())
+										.suggests((ctx, builder) -> SharedSuggestionProvider.suggest(
+												FstestConfig.INSTANCE.areas().keySet(), builder))
+										.executes(ctx -> usage(ctx, "fstest.mtrarea.add.usage"))
+										.then(Commands.argument("pos1", BlockPosArgument.blockPos())
+												.executes(ctx -> usage(ctx, "fstest.mtrarea.add.usage"))
+												.then(Commands.argument("pos2", BlockPosArgument.blockPos())
+														.executes(FstestCommand::mtrAreaAdd)))))
+						.then(Commands.literal("remove")
+								.executes(ctx -> usage(ctx, "fstest.mtrarea.remove.usage"))
+								.then(Commands.argument("name", StringArgumentType.word())
+										.suggests((ctx, builder) -> SharedSuggestionProvider.suggest(
+												FstestConfig.INSTANCE.areas().keySet(), builder))
+										.executes(FstestCommand::mtrAreaRemove)))
+						.then(Commands.literal("list").executes(FstestCommand::mtrAreaList))
+						.then(Commands.literal("clear").executes(FstestCommand::mtrAreaClearAll)))
 				.then(Commands.literal("targets")
 						.executes(ctx -> usage(ctx, "fstest.targets.usage"))
 						.then(Commands.literal("add")
@@ -140,7 +158,9 @@ public final class FstestCommand
 						.then(Commands.literal("query").executes(FstestCommand::targetsQuery)))
 				.then(Commands.literal("query").executes(FstestCommand::query));
 
-		dispatcher.register(root);
+		com.mojang.brigadier.tree.CommandNode<CommandSourceStack> rootNode = dispatcher.register(root);
+		// deprecated alias: /fstest range behaves exactly like /fstest scope
+		dispatcher.register(Commands.literal("range").redirect(rootNode));
 	}
 
 	private static com.mojang.brigadier.builder.RequiredArgumentBuilder<CommandSourceStack, String> toggleArgument()
@@ -225,35 +245,6 @@ public final class FstestCommand
 		return ok(ctx, "fstest.count.set", yellow(which.toLowerCase(Locale.ROOT)), yellow(String.valueOf(n)));
 	}
 
-	private static int setRange(CommandContext<CommandSourceStack> ctx, String value)
-	{
-		String normalized = value.trim().toLowerCase(Locale.ROOT);
-		int r;
-		if (normalized.equals("unlimited"))
-		{
-			r = -1;
-		}
-		else
-		{
-			try
-			{
-				r = Integer.parseInt(normalized);
-			}
-			catch (NumberFormatException e)
-			{
-				return fail(ctx, "fstest.range.usage");
-			}
-		}
-		if (!FstestConfig.INSTANCE.setRange(r))
-		{
-			return fail(ctx, "fstest.range.usage");
-		}
-		Component shown = r == -1
-				? Component.translatable("fstest.range.unlimited").withStyle(ChatFormatting.YELLOW)
-				: yellow(String.valueOf(r));
-		return ok(ctx, "fstest.range.set", shown);
-	}
-
 	private static int setPStrategy(CommandContext<CommandSourceStack> ctx, String value)
 	{
 		PStrategy strategy = switch (value.trim().toLowerCase(Locale.ROOT))
@@ -297,32 +288,82 @@ public final class FstestCommand
 		return ok(ctx, "fstest.duplications.set", toggleLabel(parsed));
 	}
 
-	private static int setMtr(CommandContext<CommandSourceStack> ctx, String value)
+	private static int setSim(CommandContext<CommandSourceStack> ctx, String value)
+	{
+		FstestSimMode mode = FstestSimMode.parse(value);
+		if (mode == null)
+		{
+			return fail(ctx, "fstest.sim.invalid", yellow(value));
+		}
+		FstestConfig.INSTANCE.setSimMode(mode);
+		if (mode == FstestSimMode.TIMED)
+		{
+			return ok(ctx, "fstest.sim.set.timed", yellow(String.valueOf(FstestConfig.INSTANCE.simTicks())));
+		}
+		return ok(ctx, "fstest.sim.set.instant");
+	}
+
+	private static int setSimTicks(CommandContext<CommandSourceStack> ctx, int ticks)
+	{
+		if (!FstestConfig.INSTANCE.setSimTicks(ticks))
+		{
+			return fail(ctx, "fstest.simticks.usage");
+		}
+		return ok(ctx, "fstest.simticks.set", yellow(String.valueOf(ticks)));
+	}
+
+	/**
+	 * /fstest scope <unlimited|r|area-name>: a value usable as a radius is
+	 * treated as the radius, anything else is looked up as a named test area.
+	 */
+	private static int setScope(CommandContext<CommandSourceStack> ctx, String value)
 	{
 		String normalized = value.trim().toLowerCase(Locale.ROOT);
-		if (normalized.equals("off") || normalized.equals("0"))
+		if (normalized.equals("unlimited"))
 		{
-			FstestConfig.INSTANCE.setMtrTicks(0);
-			return ok(ctx, "fstest.mtr.off");
+			FstestConfig.INSTANCE.setRange(-1);
+			FstestConfig.INSTANCE.setScopeArea(null);
+			return ok(ctx, "fstest.scope.set.radius",
+					Component.translatable("fstest.range.unlimited").withStyle(ChatFormatting.YELLOW));
 		}
-		int ticks;
 		try
 		{
-			ticks = Integer.parseInt(normalized);
+			int r = Integer.parseInt(normalized);
+			if (!FstestConfig.INSTANCE.setRange(r))
+			{
+				return fail(ctx, "fstest.scope.usage");
+			}
+			FstestConfig.INSTANCE.setScopeArea(null);
+			return ok(ctx, "fstest.scope.set.radius", yellow(String.valueOf(r)));
 		}
 		catch (NumberFormatException e)
 		{
-			return fail(ctx, "fstest.mtr.usage");
+			// fall through: treat the value as an area name
 		}
-		if (!FstestConfig.INSTANCE.setMtrTicks(ticks))
+		String name = value.trim();
+		FstestConfig.Area area = FstestConfig.INSTANCE.area(name);
+		if (area == null)
 		{
-			return fail(ctx, "fstest.mtr.usage");
+			return fail(ctx, "fstest.scope.unknown_area", yellow(name));
 		}
-		return ok(ctx, "fstest.mtr.set", yellow(String.valueOf(ticks)));
+		FstestConfig.INSTANCE.setScopeArea(name);
+		return ok(ctx, "fstest.scope.set.area", yellow(name), posText(area.pos1()), posText(area.pos2()));
 	}
 
-	private static int mtrAreaSet(CommandContext<CommandSourceStack> ctx)
+	private static List<String> scopeSuggestions()
 	{
+		List<String> suggestions = new ArrayList<>(List.of("unlimited"));
+		suggestions.addAll(FstestConfig.INSTANCE.areas().keySet());
+		return suggestions;
+	}
+
+	private static int mtrAreaAdd(CommandContext<CommandSourceStack> ctx)
+	{
+		String name = StringArgumentType.getString(ctx, "name").trim();
+		if (name.isEmpty() || name.length() > 32)
+		{
+			return fail(ctx, "fstest.mtrarea.add.usage");
+		}
 		BlockPos pos1 = BlockPosArgument.getBlockPos(ctx, "pos1");
 		BlockPos pos2 = BlockPosArgument.getBlockPos(ctx, "pos2");
 		FstestConfig.Area area = FstestConfig.Area.of(pos1, pos2);
@@ -331,30 +372,60 @@ public final class FstestCommand
 		{
 			return fail(ctx, "fstest.mtrarea.too_large", yellow(String.valueOf(FstestConfig.MAX_AREA_SIDE)));
 		}
-		FstestConfig.INSTANCE.setMtrArea(area);
-		return ok(ctx, "fstest.mtrarea.set",
-				posText(area.pos1()), posText(area.pos2()));
+		boolean replaced = FstestConfig.INSTANCE.area(name) != null;
+		FstestConfig.INSTANCE.putArea(name, area);
+		return ok(ctx, replaced ? "fstest.mtrarea.overridden" : "fstest.mtrarea.added",
+				yellow(name), posText(area.pos1()), posText(area.pos2()));
 	}
 
-	private static int mtrAreaClear(CommandContext<CommandSourceStack> ctx)
+	private static int mtrAreaRemove(CommandContext<CommandSourceStack> ctx)
 	{
-		if (FstestConfig.INSTANCE.mtrArea() == null)
+		String name = StringArgumentType.getString(ctx, "name").trim();
+		if (FstestConfig.INSTANCE.removeArea(name).isEmpty())
+		{
+			return fail(ctx, "fstest.mtrarea.remove_missing", yellow(name));
+		}
+		return ok(ctx, "fstest.mtrarea.removed", yellow(name));
+	}
+
+	private static int mtrAreaList(CommandContext<CommandSourceStack> ctx)
+	{
+		Map<String, FstestConfig.Area> areas = FstestConfig.INSTANCE.areas();
+		Component message;
+		if (areas.isEmpty())
+		{
+			message = Component.translatable("fstest.mtrarea.list.empty").withStyle(ChatFormatting.GRAY);
+		}
+		else
+		{
+			Component body = Component.empty()
+					.append(Component.translatable("fstest.mtrarea.list.header", areas.size()).withStyle(ChatFormatting.GOLD))
+					.append("\n");
+			for (Map.Entry<String, FstestConfig.Area> entry : areas.entrySet())
+			{
+				Component line = Component.translatable("fstest.mtrarea.list.entry",
+						yellow(entry.getKey()), posText(entry.getValue().pos1()), posText(entry.getValue().pos2()));
+				if (entry.getKey().equals(FstestConfig.INSTANCE.scopeArea()))
+				{
+					line = line.copy().append(Component.translatable("fstest.mtrarea.list.scoped")
+							.withStyle(ChatFormatting.AQUA));
+				}
+				body = body.copy().append(line).append("\n");
+			}
+			message = body;
+		}
+		ctx.getSource().sendSuccess(() -> message, false);
+		return com.mojang.brigadier.Command.SINGLE_SUCCESS;
+	}
+
+	private static int mtrAreaClearAll(CommandContext<CommandSourceStack> ctx)
+	{
+		int removed = FstestConfig.INSTANCE.clearAreas();
+		if (removed == 0)
 		{
 			return fail(ctx, "fstest.mtrarea.clear_empty");
 		}
-		FstestConfig.INSTANCE.setMtrArea(null);
-		return ok(ctx, "fstest.mtrarea.cleared");
-	}
-
-	private static int mtrAreaQuery(CommandContext<CommandSourceStack> ctx)
-	{
-		FstestConfig.Area area = FstestConfig.INSTANCE.mtrArea();
-		Component message = area == null
-				? Component.translatable("fstest.mtrarea.query.empty").withStyle(ChatFormatting.GRAY)
-				: Component.translatable("fstest.mtrarea.query.set",
-						posText(area.pos1()), posText(area.pos2())).withStyle(ChatFormatting.GOLD);
-		ctx.getSource().sendSuccess(() -> message, false);
-		return com.mojang.brigadier.Command.SINGLE_SUCCESS;
+		return ok(ctx, "fstest.mtrarea.cleared", yellow(String.valueOf(removed)));
 	}
 
 	private static int targetsAdd(CommandContext<CommandSourceStack> ctx)
@@ -460,10 +531,12 @@ public final class FstestCommand
 				.append(line("fstest.query.pstrategy", strategyLabel(cfg.strategy())))
 				.append(line("fstest.query.updates", toggleLabel(cfg.updates())))
 				.append(line("fstest.query.duplications", toggleLabel(cfg.duplications())))
-				.append(line("fstest.query.mtr", cfg.isMtrEnabled()
-						? yellow(cfg.mtrTicks() + " ticks")
-						: Component.translatable("fstest.toggle.off").withStyle(ChatFormatting.RED)))
-				.append(line("fstest.query.mtrarea", areaLabel(cfg.mtrArea())))
+				.append(line("fstest.query.sim", simModeLabel(cfg.simMode())))
+				.append(line("fstest.query.simticks", cfg.isTimed()
+						? yellow(cfg.simTicks() + " ticks")
+						: Component.translatable("fstest.query.not_used").withStyle(ChatFormatting.DARK_GRAY)))
+				.append(line("fstest.query.scope", scopeLabel(cfg)))
+				.append(line("fstest.query.areas", yellow(String.valueOf(cfg.areas().size()))))
 				.append(line("fstest.query.targets", yellow(String.valueOf(cfg.targets().size()))));
 		ctx.getSource().sendSuccess(() -> message, false);
 		return com.mojang.brigadier.Command.SINGLE_SUCCESS;
@@ -500,14 +573,27 @@ public final class FstestCommand
 		return yellow(pos.getX() + " " + pos.getY() + " " + pos.getZ());
 	}
 
-	private static Component areaLabel(FstestConfig.Area area)
+	private static Component simModeLabel(FstestSimMode mode)
 	{
-		if (area == null)
+		return Component.translatable("fstest.sim." + mode.name().toLowerCase(Locale.ROOT))
+				.withStyle(ChatFormatting.YELLOW);
+	}
+
+	private static Component scopeLabel(FstestConfig cfg)
+	{
+		if (cfg.scopeArea() != null)
 		{
-			return Component.translatable("fstest.mtrarea.query.empty").withStyle(ChatFormatting.GRAY);
+			FstestConfig.Area area = cfg.area(cfg.scopeArea());
+			if (area != null)
+			{
+				return yellow(cfg.scopeArea() + " (" + area.pos1().getX() + " " + area.pos1().getY() + " "
+						+ area.pos1().getZ() + " -> " + area.pos2().getX() + " " + area.pos2().getY() + " "
+						+ area.pos2().getZ() + ")");
+			}
 		}
-		return yellow(area.pos1().getX() + " " + area.pos1().getY() + " " + area.pos1().getZ()
-				+ " -> " + area.pos2().getX() + " " + area.pos2().getY() + " " + area.pos2().getZ());
+		return cfg.isRangeUnlimited()
+				? Component.translatable("fstest.range.unlimited").withStyle(ChatFormatting.YELLOW)
+				: yellow("radius " + cfg.range());
 	}
 
 	private static Component yellow(String text)

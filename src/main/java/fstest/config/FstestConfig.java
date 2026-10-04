@@ -26,10 +26,12 @@ public final class FstestConfig
 	/** Default snapshot radius used when range is "unlimited". */
 	public static final int DEFAULT_RANGE_UNLIMITED = 48;
 
-	/** Upper bound for one side of the MTR test area, per axis. */
+	/** Upper bound for one side of a named test area, per axis. */
 	public static final int MAX_AREA_SIDE = 256;
-	/** Upper bound for the MTR simulation duration in game ticks. */
-	public static final int MAX_MTR_TICKS = 100;
+	/** Upper bound for the timed-mode simulation duration in game ticks. */
+	public static final int MAX_SIM_TICKS = 100;
+	/** Default timed-mode duration when switching to {@code sim timed} without a prior setting. */
+	public static final int DEFAULT_SIM_TICKS = 10;
 
 	private FstestMode mode = FstestMode.NONE;
 	private Optional<DyeColor> color = Optional.empty();
@@ -41,17 +43,26 @@ public final class FstestConfig
 	private boolean updates = true;
 	private boolean duplications = true;
 	/**
-	 * MTR (multi-tick replay) mode: 0 = off (instant-window analysis as in v1),
-	 * 1..{@value #MAX_MTR_TICKS} = the simulated space executes this many game
-	 * ticks after the operation replay (scheduled ticks, block events, block
-	 * entity ticking). Never touched on the real world.
+	 * Simulation mode (instant vs timed); independent of the test mode.
+	 * Exactly one is active - they are never run together.
 	 */
-	private int mtrTicks = 0;
+	private FstestSimMode simMode = FstestSimMode.INSTANT;
 	/**
-	 * MTR-style explicit test area (two corners); when set, MTR-mode snapshots
-	 * capture exactly this box instead of the {@code /fstest range} cube.
+	 * Timed-mode simulation duration in game ticks (1..{@value #MAX_SIM_TICKS}).
+	 * Only meaningful while {@code simMode == TIMED}.
 	 */
-	private Area mtrArea;
+	private int simTicks = DEFAULT_SIM_TICKS;
+	/**
+	 * Scope selection by NAME of a registered test area; when set it takes
+	 * precedence over the numeric radius ({@code /fstest scope <name>}).
+	 */
+	private String scopeArea;
+	/**
+	 * Named test areas (fstest's own MTR-style selections, distinct from the
+	 * MicroTimingReplay mod's profiles). Insertion order is preserved so
+	 * {@code /fstest mtrarea list} is stable.
+	 */
+	private final Map<String, Area> areas = new LinkedHashMap<>();
 	/**
 	 * Manually registered subscription markers, keyed by the monitored block
 	 * POSITION itself (not a wool anchor): a target subscribes the block it sits
@@ -90,8 +101,10 @@ public final class FstestConfig
 		INSTANCE.strategy = PStrategy.UNIFORM;
 		INSTANCE.updates = true;
 		INSTANCE.duplications = true;
-		INSTANCE.mtrTicks = 0;
-		INSTANCE.mtrArea = null;
+		INSTANCE.simMode = FstestSimMode.INSTANT;
+		INSTANCE.simTicks = DEFAULT_SIM_TICKS;
+		INSTANCE.scopeArea = null;
+		INSTANCE.areas.clear();
 		INSTANCE.targets.clear();
 	}
 
@@ -304,39 +317,97 @@ public final class FstestConfig
 		return before;
 	}
 
-	/** 0 = off (instant-window analysis); 1..{@value #MAX_MTR_TICKS} = multi-tick replay simulation. */
-	public int mtrTicks()
+	/** Instant or timed; never both at once. */
+	public FstestSimMode simMode()
 	{
-		return this.mtrTicks;
+		return this.simMode;
 	}
 
-	public boolean isMtrEnabled()
+	public boolean isTimed()
 	{
-		return this.mtrTicks > 0;
+		return this.simMode == FstestSimMode.TIMED;
 	}
 
-	/** n must be 0 (off) or within 1..{@value #MAX_MTR_TICKS}. */
-	public boolean setMtrTicks(int n)
+	public void setSimMode(FstestSimMode simMode)
 	{
-		if (n < 0 || n > MAX_MTR_TICKS)
+		this.simMode = simMode;
+		this.changed();
+	}
+
+	/** Timed-mode duration in game ticks (1..{@value #MAX_SIM_TICKS}). */
+	public int simTicks()
+	{
+		return this.simTicks;
+	}
+
+	/** n must be within 1..{@value #MAX_SIM_TICKS}. */
+	public boolean setSimTicks(int n)
+	{
+		if (n < 1 || n > MAX_SIM_TICKS)
 		{
 			return false;
 		}
-		this.mtrTicks = n;
+		this.simTicks = n;
 		this.changed();
 		return true;
 	}
 
-	/** Nullable: when unset, MTR mode falls back to the {@code /fstest range} cube. */
-	public Area mtrArea()
+	/** Name of the registered test area used as the snapshot/simulation scope; null = radius mode. */
+	public String scopeArea()
 	{
-		return this.mtrArea;
+		return this.scopeArea;
 	}
 
-	public void setMtrArea(Area area)
+	public void setScopeArea(String name)
 	{
-		this.mtrArea = area;
+		this.scopeArea = name;
 		this.changed();
+	}
+
+	/** The registered area the scope currently points at, if any. */
+	public Optional<Area> scopedArea()
+	{
+		return this.scopeArea == null ? Optional.empty() : Optional.ofNullable(this.areas.get(this.scopeArea));
+	}
+
+	/** Insertion-ordered, read-only view of the named test areas. */
+	public Map<String, Area> areas()
+	{
+		return Collections.unmodifiableMap(this.areas);
+	}
+
+	public Area area(String name)
+	{
+		return this.areas.get(name);
+	}
+
+	/** Registers (or replaces) a named test area. */
+	public void putArea(String name, Area area)
+	{
+		this.areas.put(name, area);
+		this.changed();
+	}
+
+	/** @return the removed area, if any */
+	public Optional<Area> removeArea(String name)
+	{
+		Area removed = this.areas.remove(name);
+		if (name.equals(this.scopeArea))
+		{
+			this.scopeArea = null;
+		}
+		this.changed();
+		return Optional.ofNullable(removed);
+	}
+
+	/** @return how many areas were removed */
+	public int clearAreas()
+	{
+		int before = this.areas.size();
+		this.areas.clear();
+		this.scopeArea = null;
+		this.changed();
+		return before;
 	}
 
 	/**

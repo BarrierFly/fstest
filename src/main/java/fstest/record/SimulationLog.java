@@ -172,7 +172,9 @@ public final class SimulationLog
 		w.write("pstrategy        : " + cfg.strategy()); w.newLine();
 		w.write("updates          : " + (cfg.updates() ? "on" : "off")); w.newLine();
 		w.write("duplications     : " + (cfg.duplications() ? "on" : "off")); w.newLine();
-		w.write("mtr mode         : " + (mtrMode ? cfg.mtrTicks() + " simulated ticks per run" : "off")); w.newLine();
+		w.write("sim mode         : " + (mtrMode
+				? "timed (" + cfg.simTicks() + " simulated ticks per run)"
+				: "instant")); w.newLine();
 		w.write("test area        : " + areaText(cfg)); w.newLine();
 		w.write("targets          : " + cfg.targets().size()); w.newLine();
 		w.write("real events      : " + realSession.events.size()); w.newLine();
@@ -201,13 +203,14 @@ public final class SimulationLog
 
 	private static String areaText(FstestConfig cfg)
 	{
-		FstestConfig.Area area = cfg.mtrArea();
+		FstestConfig.Area area = cfg.scopedArea().orElse(null);
 		if (area != null)
 		{
-			return "selection " + area.pos1().getX() + " " + area.pos1().getY() + " " + area.pos1().getZ()
+			return "area '" + cfg.scopeArea() + "' "
+					+ area.pos1().getX() + " " + area.pos1().getY() + " " + area.pos1().getZ()
 					+ " -> " + area.pos2().getX() + " " + area.pos2().getY() + " " + area.pos2().getZ();
 		}
-		return "range cube " + (cfg.isRangeUnlimited() ? "unlimited" : Integer.toString(cfg.range()));
+		return "radius " + (cfg.isRangeUnlimited() ? "unlimited" : Integer.toString(cfg.range()));
 	}
 
 	private static String formatMillis(long nanos)

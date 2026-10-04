@@ -124,9 +124,9 @@ public final class ReportFormatter
 	{
 		Aggregation agg = aggregate(referenceEvents, runs);
 		List<Component> lines = new ArrayList<>();
-		lines.add(Component.translatable(mtrMode ? "fstest.report.header.mtr" : "fstest.report.header")
+		lines.add(Component.translatable(mtrMode ? "fstest.report.header.timed" : "fstest.report.header")
 				.withStyle(ChatFormatting.GOLD));
-		lines.add(Component.translatable(mtrMode ? "fstest.report.runs.mtr" : "fstest.report.runs",
+		lines.add(Component.translatable(mtrMode ? "fstest.report.runs.timed" : "fstest.report.runs",
 				runs.size(), agg.identical(), referenceEvents.size()).withStyle(ChatFormatting.GRAY));
 
 		List<OutcomeAgg> sorted = new ArrayList<>(agg.outcomes().values());
@@ -152,7 +152,7 @@ public final class ReportFormatter
 
 		if (sorted.isEmpty())
 		{
-			lines.add(Component.translatable(mtrMode ? "fstest.report.all_match.mtr" : "fstest.report.all_match")
+			lines.add(Component.translatable(mtrMode ? "fstest.report.all_match.timed" : "fstest.report.all_match")
 					.withStyle(ChatFormatting.GREEN));
 		}
 

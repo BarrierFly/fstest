@@ -6,8 +6,10 @@ import com.mojang.brigadier.CommandDispatcher;
 import fstest.command.FstestCommand;
 import fstest.config.FstestConfig;
 import fstest.config.FstestPersistence;
+import fstest.sim.SimServer;
 import net.minecraft.commands.CommandBuildContext;
 import net.minecraft.commands.CommandSourceStack;
+import net.minecraft.server.MinecraftServer;
 
 /**
  * Carpet extension hook. All functionality lives behind {@code /fstest},
@@ -27,6 +29,13 @@ public class FstestExtension implements CarpetExtension
 	public void registerCommands(CommandDispatcher<CommandSourceStack> dispatcher, CommandBuildContext commandBuildContext)
 	{
 		FstestCommand.register(dispatcher);
+	}
+
+	@Override
+	public void onServerClosed(MinecraftServer server)
+	{
+		// the simulation server lives in a scratch world on disk; never outlive the host
+		SimServer.shutdown();
 	}
 
 	@Override

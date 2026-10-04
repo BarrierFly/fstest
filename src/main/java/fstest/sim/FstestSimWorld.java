@@ -1,6 +1,5 @@
 package fstest.sim;
 
-import fstest.FstestMod;
 import fstest.record.CapturedDispatch;
 import fstest.record.RecorderHub;
 import fstest.record.RemovalSideEffect;
@@ -35,8 +34,6 @@ import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.Rotation;
 import net.minecraft.world.level.block.entity.BlockEntity;
-import net.minecraft.world.level.block.entity.BlockEntityTicker;
-import net.minecraft.world.level.block.entity.BlockEntityType;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.border.WorldBorder;
 import net.minecraft.world.level.chunk.ChunkSource;
@@ -122,18 +119,6 @@ public final class FstestSimWorld extends Level
 	// baseline can be attributed (cascade never started vs nothing subscribed)
 	private long setBlockCalls;
 	private long neighborUpdateDispatches;
-	// --- MTR mode: multi-tick execution state ---
-	/** True between {@link #runSimTicks} begin and end; switches removal handling to the curated executors. */
-	private boolean executingSimTicks;
-	/** Ticks whose scheduled-tick entry was drained but whose behaviour is outside the curated executor set. */
-	private long unexecutedBlockTicks;
-	private long unexecutedFluidTicks;
-	/** Scheduled-tick executions or block-entity ticks that threw inside the simulation. */
-	private long tickFailures;
-	/** Block events drained and executed via the native Level-typed triggerEvent path. */
-	private long executedBlockEvents;
-	/** First positions of unexecuted ticks, for the per-run stats line. */
-	private final List<BlockPos> unexecutedPositions = new ArrayList<>();
 
 	public FstestSimWorld(ServerLevel source, MinecraftServer server, SimLevelData data, Holder<DimensionType> dimensionType,
 	              ResourceKey<Level> dimensionKey)
@@ -201,33 +186,24 @@ public final class FstestSimWorld extends Level
 	}
 
 	/** Re-issues the captured removal-hook dispatches for one removal, if any. */
-	private void issueRemovalSideEffects(BlockPos pos, BlockState oldState, boolean movedByPiston)
+	private void issueRemovalSideEffects(BlockPos pos)
 	{
 		Deque<RemovalSideEffect> pending = this.removalSideEffects.get(pos);
-		if (pending != null && !pending.isEmpty())
+		if (pending == null || pending.isEmpty())
 		{
-			RemovalSideEffect effect = pending.poll();
-			if (NeighborCascades.isBusy(this) != effect.cascadeBusy())
-			{
-				// the two removals no longer sit in the same cascade context, so the
-				// dispatches below will not enter the manual stack the same way
-				this.sideEffectContextMismatches.add(pos.immutable());
-			}
-			for (CapturedDispatch dispatch : effect.dispatches())
-			{
-				this.issueDispatch(dispatch.kind(), dispatch.pos(), dispatch.block(),
-						dispatch.exceptDir(), dispatch.orientation(), dispatch.movedByPiston());
-			}
 			return;
 		}
-		// No captured dispatch: either the block's removal hook does nothing
-		// observable (the common case - vanilla's default hook is empty), or the
-		// removal happened inside simulated ticks, where the MTR mode has no
-		// reality capture to draw from. For redstone components the hook's
-		// dispatch-only body is re-executed natively against this world.
-		if (this.executingSimTicks && SimRemovalExecutors.isCurated(oldState))
+		RemovalSideEffect effect = pending.poll();
+		if (NeighborCascades.isBusy(this) != effect.cascadeBusy())
 		{
-			SimRemovalExecutors.affectNeighborsAfterRemoval(this, oldState, pos, movedByPiston);
+			// the two removals no longer sit in the same cascade context, so the
+			// dispatches below will not enter the manual stack the same way
+			this.sideEffectContextMismatches.add(pos.immutable());
+		}
+		for (CapturedDispatch dispatch : effect.dispatches())
+		{
+			this.issueDispatch(dispatch.kind(), dispatch.pos(), dispatch.block(),
+					dispatch.exceptDir(), dispatch.orientation(), dispatch.movedByPiston());
 		}
 	}
 
@@ -270,237 +246,9 @@ public final class FstestSimWorld extends Level
 	}
 
 	// ------------------------------------------------------------------
-	// MTR mode: multi-tick execution (vanilla ServerLevel.tick phase subset)
-	// ------------------------------------------------------------------
-
-	/**
-	 * Runs {@code count} simulated game ticks, mirroring vanilla
-	 * {@code ServerLevel#tick}'s relevant phase order: time advance, scheduled
-	 * block ticks, scheduled fluid ticks, block events, block entity ticking.
-	 *
-	 * Deliberately skipped (out of the simulation's scope, documented in the
-	 * README): world border, weather, raids, chunk management, entities,
-	 * random ticks and scheduled functions. Events emitted here are recorded
-	 * through the same {@link RecorderHub} session as the replayed operation,
-	 * so the whole multi-tick stream diffs against the baseline run.
-	 *
-	 * @param onTickEnd invoked once per simulated tick with the recording
-	 *                  session's current event count (per-tick log breakdown)
-	 */
-	public void runSimTicks(int count, java.util.function.IntSupplier onTickEnd)
-	{
-		this.executingSimTicks = true;
-		try
-		{
-			for (int i = 0; i < count; i++)
-			{
-				this.simData.advanceTickTime();
-				long now = this.getGameTime();
-				this.executeBlockTicks(now);
-				this.executeFluidTicks(now);
-				this.runBlockEvents();
-				this.tickSimBlockEntities();
-				onTickEnd.getAsInt();
-			}
-		}
-		finally
-		{
-			this.executingSimTicks = false;
-			this.blockQueueForBuild.endPhase();
-			this.fluidQueueForBuild.endPhase();
-		}
-	}
-
-	private void executeBlockTicks(long now)
-	{
-		List<ScheduledTick<Block>> due =
-				this.blockQueueForBuild.drainDue(now, SimTickQueue.maxTicksPerPhase());
-		this.blockQueueForBuild.beginPhase(due);
-		for (ScheduledTick<Block> tick : due)
-		{
-			try
-			{
-				BlockState state = this.getBlockState(tick.pos());
-				if (state.is(tick.type())
-						&& !SimTickExecutors.executeBlockTick(this, state, tick.pos(), tick.type()))
-				{
-					this.countUnexecutedTick(tick.pos(), true);
-				}
-			}
-			catch (Throwable t)
-			{
-				this.tickFailures++;
-				FstestMod.LOGGER.warn("[fstest] simulated block tick failed at {} ({})",
-						tick.pos().toShortString(), tick.type(), t);
-			}
-			finally
-			{
-				this.blockQueueForBuild.markRan(tick);
-			}
-		}
-	}
-
-	private void executeFluidTicks(long now)
-	{
-		List<ScheduledTick<Fluid>> due =
-				this.fluidQueueForBuild.drainDue(now, SimTickQueue.maxTicksPerPhase());
-		this.fluidQueueForBuild.beginPhase(due);
-		for (ScheduledTick<Fluid> tick : due)
-		{
-			try
-			{
-				// v1 of MTR mode does not execute fluid ticks: FlowingFluid's whole
-				// execution chain (tick/spread/getNewLiquid) is ServerLevel-typed,
-				// too wide to replicate faithfully. Counted and surfaced instead.
-				BlockState state = this.getBlockState(tick.pos());
-				if (state.getFluidState().is(tick.type()))
-				{
-					this.countUnexecutedTick(tick.pos(), false);
-				}
-			}
-			finally
-			{
-				this.fluidQueueForBuild.markRan(tick);
-			}
-		}
-	}
-
-	private void countUnexecutedTick(BlockPos pos, boolean isBlock)
-	{
-		if (isBlock)
-		{
-			this.unexecutedBlockTicks++;
-		}
-		else
-		{
-			this.unexecutedFluidTicks++;
-		}
-		if (this.unexecutedPositions.size() < 4)
-		{
-			this.unexecutedPositions.add(pos.immutable());
-		}
-	}
-
-	private void runBlockEvents()
-	{
-		List<BlockEventData> rescheduled = new ArrayList<>();
-		while (!this.blockEvents.isEmpty())
-		{
-			// vanilla ServerLevel#runBlockEvents drains the deque head-first and
-			// re-queues events whose chunk is not tickable; here the envelope is
-			// the "loaded" region
-			BlockEventData event = ((java.util.SequencedCollection<BlockEventData>) this.blockEvents).removeFirst();
-			if (!this.envelopeContains(event.pos()))
-			{
-				rescheduled.add(event);
-				continue;
-			}
-			BlockState state = this.getBlockState(event.pos());
-			if (state.is(event.block()))
-			{
-				this.executedBlockEvents++;
-				try
-				{
-					// Level-typed in vanilla - executes natively here, pistons included
-					state.triggerEvent(this, event.pos(), event.paramA(), event.paramB());
-				}
-				catch (Throwable t)
-				{
-					this.tickFailures++;
-					FstestMod.LOGGER.warn("[fstest] simulated block event failed at {} ({})",
-							event.pos().toShortString(), event.block(), t);
-				}
-			}
-		}
-		this.blockEvents.addAll(rescheduled);
-	}
-
-	@SuppressWarnings({"unchecked", "rawtypes"})
-	private void tickSimBlockEntities()
-	{
-		if (this.blockEntities.isEmpty())
-		{
-			return;
-		}
-		List<BlockEntity> snapshot = new ArrayList<>(this.blockEntities.values());
-		for (BlockEntity be : snapshot)
-		{
-			if (be.isRemoved())
-			{
-				continue;
-			}
-			BlockPos pos = be.getBlockPos();
-			if (!this.envelopeContains(pos))
-			{
-				continue;
-			}
-			BlockState state = this.getBlockState(pos);
-			BlockEntityTicker ticker = state.getTicker(this, (BlockEntityType) be.getType());
-			if (ticker == null)
-			{
-				continue;
-			}
-			try
-			{
-				ticker.tick(this, pos, state, be);
-			}
-			catch (Throwable t)
-			{
-				this.tickFailures++;
-				FstestMod.LOGGER.warn("[fstest] simulated block entity tick failed at {} ({})",
-						pos.toShortString(), be.getType(), t);
-			}
-			if (be.isRemoved())
-			{
-				this.blockEntities.remove(pos, be);
-			}
-		}
-	}
-
-	public boolean isExecutingSimTicks()
-	{
-		return this.executingSimTicks;
-	}
-
-	public long unexecutedBlockTicks()
-	{
-		return this.unexecutedBlockTicks;
-	}
-
-	public long unexecutedFluidTicks()
-	{
-		return this.unexecutedFluidTicks;
-	}
-
-	public long tickFailures()
-	{
-		return this.tickFailures;
-	}
-
-	public long executedBlockEvents()
-	{
-		return this.executedBlockEvents;
-	}
-
-	public List<BlockPos> unexecutedPositions()
-	{
-		return this.unexecutedPositions;
-	}
-
-	/** Expands the writable/readable envelope to include the given box (build-height semantics stay ignored). */
-	public void growEnvelopeTo(BlockPos min, BlockPos max)
-	{
-		if (min.getX() < this.minX) this.minX = min.getX();
-		if (min.getY() < this.minY) this.minY = min.getY();
-		if (min.getZ() < this.minZ) this.minZ = min.getZ();
-		if (max.getX() > this.maxX) this.maxX = max.getX();
-		if (max.getY() > this.maxY) this.maxY = max.getY();
-		if (max.getZ() > this.maxZ) this.maxZ = max.getZ();
-	}
-
-	// ------------------------------------------------------------------
 	// Random isolation
 	// ------------------------------------------------------------------
+
 	/** Seeds the world's own random from the state captured in reality (best effort). */
 	public void reseedRandomFromCapture(int runSalt)
 	{
@@ -599,9 +347,7 @@ public final class FstestSimWorld extends Level
 			// The hook's observable effect was captured from reality per removal
 			// (RecorderHub's removal window -> RemovalSideEffect); re-issuing it at
 			// this exact point keeps the micro-timing order and cascade context.
-			// Removals produced inside simulated ticks (MTR mode) have no captured
-			// counterpart and are re-executed natively by SimRemovalExecutors.
-			this.issueRemovalSideEffects(pos, old, movingByPiston);
+			this.issueRemovalSideEffects(pos);
 		}
 
 		if ((flags & 512) == 0)
@@ -670,34 +416,6 @@ public final class FstestSimWorld extends Level
 		// real-side queue-size delta
 		boolean success = this.blockEvents.add(new BlockEventData(pos.immutable(), block, eventID, eventParam));
 		RecorderHub.onBlockEventCreate(this, pos, block, eventID, eventParam, success);
-	}
-
-	// Base Level routes setBlockEntity/removeBlockEntity through LevelChunk; the
-	// chunkless simulated space stores block entities in its own map instead.
-	@Override
-	public void setBlockEntity(BlockEntity be)
-	{
-		BlockPos pos = be.getBlockPos();
-		if (this.getBlockState(pos).hasBlockEntity())
-		{
-			be.setLevel(this);
-			be.clearRemoved();
-			BlockEntity old = this.blockEntities.put(pos.immutable(), be);
-			if (old != null && old != be)
-			{
-				old.setRemoved();
-			}
-		}
-	}
-
-	@Override
-	public void removeBlockEntity(BlockPos pos)
-	{
-		BlockEntity be = this.blockEntities.remove(pos.immutable());
-		if (be != null)
-		{
-			be.setRemoved();
-		}
 	}
 
 	// ------------------------------------------------------------------

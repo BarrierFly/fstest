@@ -46,9 +46,11 @@ Key properties:
 | `/fstest pstrategy <uniform\|chunkborder\|hashdelta>` | Offset sampling for P/PD. `hashdelta` is planned for v2. |
 | `/fstest updates <on\|off>` | Record block-update dispatch events (`NU`) or leave them out of the streams. Default `on`. |
 | `/fstest duplications <on\|off>` | Record creation attempts that were rejected as duplicates (the `dup` entries) or leave only the successful ones. Default `on`. |
-| `/fstest mtr <ticks\|off>` | **MTR mode** (multi-tick replay simulation, 1..100 ticks, default `off`): after replaying the operation, the simulated space *executes* that many game ticks - scheduled ticks, block events and block entity ticking - instead of stopping at the instant window. See [MTR mode](#mtr-mode-multi-tick-simulation). |
-| `/fstest mtrarea set <pos1> <pos2>` | Set the explicit axis-aligned **test area** used as the snapshot/simulation region in MTR mode (each side ≤ 256 blocks). |
-| `/fstest mtrarea clear` / `/fstest mtrarea query` | Clear the test area (MTR then falls back to the `/fstest range` cube) / show it. |
+| `/fstest sim <instant\|timed>` | **Simulation mode** (default `instant`). Instant simulates only the operation's synchronous window (v1 behaviour). Timed additionally *executes* `simticks` game ticks in the simulated space after the operation replay. The two modes are exclusive - exactly one is active. See [Timed mode](#timed-mode-multi-tick-simulation). |
+| `/fstest simticks <n>` | Timed-mode simulation duration, 1..100 game ticks (default 10). |
+| `/fstest scope <unlimited\|r\|area-name>` | The snapshot/simulation **scope**: a number usable as a radius is treated as the radius (r 1..128, default `unlimited` = effective 48); a name selects a registered test area. `/fstest range` is kept as a deprecated alias. |
+| `/fstest mtrarea add <name> <pos1> <pos2>` | Register a named axis-aligned **test area** (each side ≤ 256 blocks). fstest resolves area names only against its own registry - the MicroTimingReplay mod's profiles are a separate thing entirely. |
+| `/fstest mtrarea remove <name>` / `list` / `clear` | Remove one area / list all (annotating the currently scoped one) / remove all. |
 | `/fstest targets add <color> <x> <y> <z>` | Mark a block position directly (see below). Re-adding the same position recolours it. |
 | `/fstest targets remove <x> <y> <z>` | Remove one target. |
 | `/fstest targets remove color <color>` | Remove every target of that colour. |
@@ -58,18 +60,19 @@ Key properties:
 
 A subcommand invoked without its required arguments prints that subcommand's own usage line instead of Brigadier's generic tree help; bare `/fstest` prints a one-line index of the subcommands.
 
-Settings are sticky and **persisted** to `<config>/fstest.json` (including the target list and the MTR test area), written after every change and reloaded on server start. A corrupt or unparseable file falls back to the defaults with a server-log warning; unknown keys are ignored.
+Settings are sticky and **persisted** to `<config>/fstest.json` (including the target list, the test areas and the scope selection), written after every change and reloaded on server start. A corrupt or unparseable file falls back to the defaults with a server-log warning; unknown keys are ignored.
 
-### MTR mode (multi-tick simulation)
+### Timed mode (multi-tick simulation)
 
-`/fstest mtr <ticks>` extends the analysis beyond the operation's instant window - inspired by hotpad100c's MicroTimingReplay ("MTR") and its tick-count-driven recording, but implemented natively and entirely inside the isolated simulated space: **the real world is never advanced and nothing is recorded from it beyond the instant window.**
+`/fstest sim timed` extends the analysis beyond the operation's instant window - inspired by hotpad100c's MicroTimingReplay ("MTR") and its tick-count-driven recording, but implemented natively: the simulated space runs inside **a second, real `MinecraftServer`** (the same construction Ryan100C's simulatica uses - genuine void dimensions with a real chunk pipeline in a scratch world that is never saved). **The real world is never advanced and nothing is recorded from it beyond the instant window.**
 
-- Each simulated run still replays the captured operation first (identical to instant mode), and then *executes* `ticks` game ticks in the virtual world, mirroring vanilla's phase order: time advance → scheduled block ticks → scheduled fluid ticks → block events → block entity ticking. Pistons (block events + moving-piston block entities), buttons, repeaters, comparators, observers, redstone torches and pressure plates therefore play out their multi-tick behaviour. Entities, random ticks, weather and explosions remain out of scope.
-- The **baseline self-check** still gates the output: the identity run's instant-window events must match the real recording exactly, or the simulator is reported as distorted.
+- Each simulated run still replays the captured operation first (identical to instant mode), and then *executes* `simticks` game ticks in that real ServerLevel, mirroring vanilla's phase order: time advance → scheduled block ticks → scheduled fluid ticks → block events → block entity ticking. Because the simulated world IS a `ServerLevel`, **every vanilla block behaviour executes natively**: all scheduled-tick consumers (repeaters, comparators, buttons, observers, redstone torches, pressure plates, pistons, dispensers, and everything else), fluid ticks (water/lava flow), block events (piston actions), block-entity ticking (moving pistons, hoppers, sculk sensors) and removal hooks (`affectNeighborsAfterRemoval`).
+- Still deliberately out of scope (per the plan): **chunk ticks incl. random ticks** (they are never simulated), entities (none exist in the simulated world - block drops, falling blocks and anything entity-driven are refused), weather, raids and explosions' entity effects.
+- The **baseline self-check** still gates the output: the identity run's instant-window events must match the real recording exactly, or the simulator is reported as distorted. (The multi-tick part has no reality counterpart, so it is checked only against the baseline simulation - see below.)
 - Because reality is not recorded beyond the instant window, the diff **reference becomes the baseline simulation itself** (identity transform, 0 offset): every transformed D/P/PD run's full multi-tick stream is compared against the baseline run's. "Matched" in the report means "matched the baseline simulation".
-- `/fstest mtrarea set <pos1> <pos2>` defines the region captured and simulated (MTR-style explicit selection). It must cover the device, its cascades *and* every monitored marker - markers outside the area cannot produce simulated events and will trip the baseline check. Without a selection, MTR falls back to the `/fstest range` cube and says so.
-- Simulated-tick coverage: scheduled ticks are executed for the redstone-relevant consumers (diodes, buttons, observers, redstone torches, pressure plates) by re-running vanilla's own Level-typed helper logic; fluid ticks and other blocks' ticks are drained but **counted as unexecuted** (`unexecuted*Ticks` in the per-run log stats). Block events and block entity tickers execute natively. Removal hooks fired by simulated-tick removals are re-executed natively for the curated redstone set (wire, rails, torches, diodes, levers, buttons, plates, observers); other blocks' hooks would have dispatched nothing observable in 1.21.11.
-- Costs multiply: per-run work is the instant replay **plus** `ticks` × (region tick phases), times the run count. Lower `/fstest count` values and a tight test area are strongly recommended in MTR mode.
+- The scope (`/fstest scope`, radius or named area) bounds what is captured and simulated; in timed mode it should cover the device, its cascades *and* every monitored marker - markers outside the scope cannot produce simulated events and will trip the baseline check.
+- Costs: the first timed-mode analysis boots the simulation server (a datapack load - expect a one-off pause of a few seconds). Per run: chunk force-load + promotion, a raw copy-in of the region, the replay and `simticks` ticks of real simulation, then a reset. Lower `/fstest count` values and a tight scope are strongly recommended.
+- Caveats: the void world's lighting (sky light 15, no real shadows) and biome (the_void) can diverge from reality for light-/biome-sensitive components - such runs surface as baseline distortion, which is the honest answer.
 
 ### Snapshot radius and performance (read this first)
 
@@ -118,9 +121,9 @@ Every accepted analysis produces output in **three places, simultaneously**:
 3. **Per-analysis text file under `<run-dir>/fstest-logs/`** — the full record. Filenames look like `2026-08-26_19-45-12-345_USE_ITEM_ON_BLOCK_at_3_64_-2_Player1.txt`. The file holds, in order:
    - a header with timestamp, player, operation, anchor, dimension, game time, the full config snapshot (mode, colour filter, counts, range, strategy, `updates`, `duplications`, MTR ticks, test area, registered-target count), the real-stream event count and the raw tick/block-event creation-attempt counts with how many of them made it into the stream (attempts include duplicates even when `duplications` is off), the baseline self-check result, and the total analysis wall-clock time (each run's stats line carries its own);
    - the **real stream** of events (deduplicated, with `×N` suffixes on consecutive identical `pos | signature` lines);
-   - the **baseline** stream (identity transform) and its diff vs the real stream; in MTR mode the baseline is split per simulated tick (`BASELINE sim tick #n` sections) and its diff vs the real stream covers only the instant-window part (the baseline self-check);
+   - the **baseline** stream (identity transform) and its diff vs the real stream; in timed mode the baseline is split per simulated tick (`BASELINE sim tick #n` sections) and its diff vs the real stream covers only the instant-window part (the baseline self-check);
    - **every simulation run** in the configured order — in D modes the identity baseline is the first entry, followed by the D set (per non-identity symmetry × `count_d`), then the P set (`count_p` runs), then the PD set (`count_pd` runs) — each with its event list, a one-line replay diagnostic (roots applied, setBlock calls, neighbour-update dispatches, tick/event creation attempts, the sampled offset, and - when non-empty - `sideEffectCtxMismatch N @ x y z ...`, which lists the removals whose side-effect replay landed in a different cascade context than reality's, so their relative timing is not guaranteed), and its diff vs the real stream. A diff whose unmatched lines are identical as a multiset is labelled `(order change only)` instead of being shown as extras/missing;
-   - the **aggregated summary**: total simulations, count that matched the reference (reality, or the baseline simulation in MTR mode), count of distinct outcomes, and for each outcome `=== Nx [label(s)] ===` (with an `(order change only ...)` note when applicable) followed by the sample `+`/`-` lines grouped by monitored position.
+   - the **aggregated summary**: total simulations, count that matched the reference (reality, or the baseline simulation in timed mode), count of distinct outcomes, and for each outcome `=== Nx [label(s)] ===` (with an `(order change only ...)` note when applicable) followed by the sample `+`/`-` lines grouped by monitored position.
 
 While the analysis runs, chat and console get a grey start line (`N replay(s) planned`) and then progress every `max(10%, 50)` replays; the final report follows.
 
@@ -132,7 +135,7 @@ While the analysis runs, chat and console get a grey start line (`N replay(s) pl
 - `-` lines: reality produced something the simulation missed (sim missing).
 - **The same line appearing in both `+` and `-` is an ORDER change**, not a missing/extra event: the same update was received (or the same block event created) at a different point of the cascade. Vanilla's redstone wire evaluator notifies its surroundings while iterating a `HashSet` of positions, so the delivery order legitimately depends on the device's absolute coordinates — a different transform (D) or offset (P) samples a different order. This is real position/orientation-dependent behaviour, exactly what the tester measures; the 0° baseline matching proves the simulator itself reproduces it faithfully. When the unmatched lines are identical as a multiset, the tester now says so directly: the log labels the diff `(order change only)` and chat prints an `(order change only - the same events in a different order)` note, so it is never mistaken for an extra/missing event.
 - **Different event counts between a run and reality** (e.g. 14 piston block-event creations vs 15) are the same phenomenon one step further: the wire cascade unrolls differently at the sampled coordinates, producing a different number of power-change rounds and therefore a different number of notifications. Real physics, not a simulator fault.
-- Runs are aggregated by distinct outcome: e.g. `50x [P#3]:` followed by that outcome's diff lines; runs matching the reference exactly are counted in the summary line. In MTR mode the reference is the baseline simulation (see [MTR mode](#mtr-mode-multi-tick-simulation)).
+- Runs are aggregated by distinct outcome: e.g. `50x [P#3]:` followed by that outcome's diff lines; runs matching the reference exactly are counted in the summary line. In timed mode the reference is the baseline simulation (see [Timed mode](#timed-mode-multi-tick-simulation)).
 
 For directionality testing, any non-empty diff means the contraption is **not** symmetric under that transform. For positionality, diffs indicate position-hash / chunk-border sensitivity (use `chunkborder` strategy to probe borders deliberately).
 
@@ -145,13 +148,13 @@ For directionality testing, any non-empty diff means the contraption is **not** 
 
 - **Performance / snapshot radius**: the snapshot reads the whole `(2·range+1)³` cube around the anchor, and every replay run re-writes its non-air blocks — cost grows with `range³` and is multiplied by the number of runs, all **synchronously on the server thread**. Always set `/fstest range` to just cover the contraption and its cascades, and lower the counts while iterating; the default `unlimited` (= 48) with default counts will stall the server. See [Snapshot radius and performance](#snapshot-radius-and-performance-read-this-first).
 - Single version build (MC 1.21.11); Stonecutter multi-version expansion (1.19.4 / 1.21.10 / 26.x) is the next step.
-- Lighting is approximated with neutral constants (sky 15, block 0): light-sensitive components (daylight sensors etc.) produce results for reference only.
+- Instant mode: lighting is approximated with neutral constants (sky 15, block 0). Timed mode: a real void world (sky light 15, no real shadows, biome the_void). Either way, light-sensitive components (daylight sensors etc.) produce results for reference only - a divergence shows up as baseline distortion.
 - Entities, explosions, and block drops are out of the simulation window; operations relying on them will surface as baseline distortion warnings.
 - Removal side effects (`affectNeighborsAfterRemoval`, e.g. redstone wire announcing its power change when broken, or when a trapdoor invalidates its support) cannot be *called* inside the simulated space (the hook's signature demands a `ServerLevel`). Instead the dispatches the real hook performs are captured per removal and re-issued in the simulated space **at the same point of its setBlock flow where vanilla would run the hook** - so the relative order and cascade context match, and the simulation's own neighbour cascades take over from there. This covers removals performed directly by the operation and removals produced inside a neighbour cascade alike. Residual: a hook that mutates blocks instead of only dispatching would not be reproduced; among 1.21.11's redstone components (wire, rails, torches, diodes, levers, buttons, plates, observers, pistons) the removal hooks only dispatch.
 - Block-entity removal side effects (`BlockEntity#preRemoveSideEffects`) are deliberately not simulated. Its default implementation drops container contents (spawning item entities); overrides drop campfire / lectern / jukebox / shulker box / furnace contents, scream from a removed sculk shrieker (game events), or finalize a moving piston (`PistonMovingBlockEntity#finalTick`). Entities, item drops and game events are out of scope per the plan, and none of these emits the recorded event kinds, so the diff is unaffected today - listed here so that a future test depending on them is not mistaken for a simulator bug.
 - Scheduled ticks are recorded but not executed inside the operation's synchronous window - matching vanilla semantics, where queued ticks only run in later tick phases.
 - The simulated space deliberately ignores the dimension's build height (per the plan: "the custom virtual world ignores world height limits"): a vertical P offset may place the captured region's edges outside `[minY, maxY]`, and those blocks stay stored and readable. Enforcing the build height there would silently turn supporting ground (or the end rod / wool above) into void air and produce a spurious run with zero events.
-- Configuration persistence (including targets and the MTR test area), per-marker grouped diff output, the clickable log path and per-run/total analysis timing are implemented (since 0.2.0). `hashdelta` strategy, JSONL machine output, exact light copying and regression tests remain v2 items.
+- Configuration persistence (including targets, the test areas and the scope selection), per-marker grouped diff output, the clickable log path and per-run/total analysis timing are implemented (0.2.0+). `hashdelta` strategy, JSONL machine output, exact light copying and regression tests remain v2 items (see `docs/v2-todo.md` for the difficulties involved).
 - A per-analysis text log is written to `<run-dir>/fstest-logs/` (see [Output destinations](#output-destinations)); the chat log path is clickable. JSONL is planned for v2.
 
 ## Building
@@ -208,9 +211,11 @@ LGPL-3.0-only. The collection layer re-implements concepts from [Carpet TIS Addi
 | `/fstest pstrategy <uniform\|chunkborder\|hashdelta>` | P/PD 的偏移采样策略；`hashdelta` 属 v2 规划。 |
 | `/fstest updates <on\|off>` | 是否记录方块更新派发事件（`NU`）。默认 `on`。 |
 | `/fstest duplications <on\|off>` | 是否记录因重复被拒的创建尝试（`dup` 条目）。默认 `on`。 |
-| `/fstest mtr <ticks\|off>` | **MTR 模式**（多刻重放模拟，1..100 tick，默认 `off`）：重放操作之后，模拟空间继续*执行*相应数量的游戏刻——计划刻、方块事件与方块实体运算——而不是止步于瞬时窗口。见 [MTR 模式](#mtr-模式多刻模拟)。 |
-| `/fstest mtrarea set <坐标1> <坐标2>` | 设置 MTR 模式使用的显式长方体**测试选区**（每条边 ≤ 256 格），作为快照与模拟区域。 |
-| `/fstest mtrarea clear` / `/fstest mtrarea query` | 清除选区（MTR 随之回落到 `/fstest range` 包围盒）/ 查看选区。 |
+| `/fstest sim <instant\|timed>` | **模拟模式**（默认 `instant`）。瞬时只模拟操作的同步处理窗口（v1 行为）；定时在重放操作之后再*执行* `simticks` 个游戏刻。两种模式互斥——同一时间只激活一种。见[定时模式](#定时模式多刻模拟)。 |
+| `/fstest simticks <n>` | 定时模式的模拟时长，1..100 游戏刻（默认 10）。 |
+| `/fstest scope <unlimited\|r\|选区名>` | 快照/模拟**范围**：能当半径用的数字按半径处理（r 取 1..128，默认 `unlimited` = 实际 48）；名字则选取已注册的测试选区。`/fstest range` 保留为弃用别名。 |
+| `/fstest mtrarea add <名称> <坐标1> <坐标2>` | 注册一个命名的长方体**测试选区**（每条边 ≤ 256 格）。fstest 只在**自己的**选区注册表里解析名字——MicroTimingReplay mod 的 profile 选区是完全独立的东西，互不读取。 |
+| `/fstest mtrarea remove <名称>` / `list` / `clear` | 移除一个选区 / 列出全部（标注当前范围内者）/ 清空。 |
 | `/fstest targets add <颜色> <x> <y> <z>` | 直接标记一个方块位置（见下）。对同一位置重复执行会改色。 |
 | `/fstest targets remove <x> <y> <z>` | 移除单个目标。 |
 | `/fstest targets remove color <颜色>` | 移除该颜色的全部目标。 |
@@ -220,18 +225,19 @@ LGPL-3.0-only. The collection layer re-implements concepts from [Carpet TIS Addi
 
 子命令缺少必需参数时会输出该子命令自己的用法行，而不是 Brigadier 的通用命令树提示；裸 `/fstest` 给出一行子命令索引。
 
-配置粘性保存，并**持久化**到 `<config>/fstest.json`（含目标列表与 MTR 测试选区）：每次修改后写回，服务器启动时读回。文件损坏或无法解析时回落默认值并在服务端日志告警；未知键会被忽略。
+配置粘性保存，并**持久化**到 `<config>/fstest.json`（含目标列表、测试选区与范围选择）：每次修改后写回，服务器启动时读回。文件损坏或无法解析时回落默认值并在服务端日志告警；未知键会被忽略。
 
-### MTR 模式（多刻模拟）
+### 定时模式（多刻模拟）
 
-`/fstest mtr <ticks>` 把分析范围扩展到操作瞬时窗口之外——灵感来自 hotpad100c 的 MicroTimingReplay（"MTR"）与其以 tick 数驱动的录制，但为 fstest 原生实现，且完全发生在隔离的模拟空间里：**绝不推进真实世界，也不在瞬时窗口之外录制现实。**
+`/fstest sim timed` 把分析范围扩展到操作瞬时窗口之外——灵感来自 hotpad100c 的 MicroTimingReplay（"MTR"）与其以 tick 数驱动的录制，但为 fstest 原生实现：模拟空间运行在**第二个真实的 `MinecraftServer`** 里（与 Ryan100C 的 simulatica 同一构造方式——真实空虚维度、真实区块管线、从不落盘的 scratch 世界）。**绝不推进真实世界，也不在瞬时窗口之外录制现实。**
 
-- 每轮模拟仍先重放捕获到的操作（与瞬时模式一致），随后在虚拟世界里*执行* `ticks` 个游戏刻，按原版阶段顺序：时间推进 → 计划刻（方块）→ 计划刻（流体）→ 方块事件 → 方块实体运算。活塞（方块事件 + 移动中的活塞方块实体）、按钮、中继器、比较器、观察者、红石火把与压力板的多刻行为因此得以展开。实体、随机刻、天气与爆炸仍在范围之外。
-- **基线自检**仍然把守输出：identity 轮的瞬时窗口事件必须与现实记录完全一致，否则报模拟器失真。
+- 每轮模拟仍先重放捕获到的操作（与瞬时模式一致），随后在那个真 ServerLevel 里*执行* `simticks` 个游戏刻，按原版阶段顺序：时间推进 → 计划刻（方块）→ 计划刻（流体）→ 方块事件 → 方块实体运算。因为模拟世界本身就是一个 `ServerLevel`，**所有原版方块行为都原生执行**：全部计划刻消费方（中继器、比较器、按钮、观察者、红石火把、压力板、活塞、发射器……）、流体计划刻（水/岩浆流动）、方块事件（活塞动作）、方块实体运算（移动活塞、漏斗、幽匿感测体）以及移除钩子（`affectNeighborsAfterRemoval`）。
+- 仍然有意排除（按规划）：**区块刻（含随机刻）**——从不模拟；实体——模拟世界里不存在任何实体（掉落物、下落方块及一切依赖实体的行为会被拒绝）；天气、袭击与爆炸的实体伤害。
+- **基线自检**仍然把守输出：identity 轮的瞬时窗口事件必须与现实记录完全一致，否则报模拟器失真。（多刻部分没有现实对照，只在各模拟轮次与基线模拟之间比较——见下。）
 - 由于现实侧没有瞬时窗口之外的记录，diff 的**参照改为基线模拟本身**（identity 变换、0 偏移）：每个 D/P/PD 变换轮的完整多刻事件流与基线轮对比。报告中的"完全一致"指"与基线模拟一致"。
-- `/fstest mtrarea set <坐标1> <坐标2>` 定义被捕获与模拟的区域（MTR 式显式选区）。选区必须覆盖装置、其级联波及范围*以及*全部监测标记——选区外的标记无法产生模拟事件，会触发基线失真。未设置选区时回落到 `/fstest range` 包围盒并给出提示。
-- 模拟刻覆盖范围：计划刻对红石相关消费方（二极管、按钮、观察者、红石火把、压力板）通过重跑原版自己的 Level 签名 helper 执行；流体计划刻与其余方块的计划刻会被取出但**计入未执行**（每轮日志 stats 的 `unexecuted*Ticks`）。方块事件与方块实体 ticker 原生执行。模拟刻期间发生的移除，其移除钩子对红石组件集合（红石线、铁轨、火把、二极管、拉杆、按钮、压力板、观察者）原生重执行；其余方块在 1.21.11 的钩子本就没有可观测派发。
-- 成本相乘：每轮成本 = 瞬时重放 **加上** `ticks` ×（区域 tick 各阶段），再乘以轮数。MTR 模式下强烈建议调小 `/fstest count` 并收紧选区。
+- 范围（`/fstest scope`，半径或命名选区）界定被捕获与模拟的区域；定时模式下应覆盖装置、其级联波及范围*以及*全部监测标记——范围外的标记无法产生模拟事件，会触发基线失真。
+- 成本：第一次定时模式分析要引导模拟服务器（一次数据包加载——预计一次性停顿数秒）。每轮：区块强制加载与提升、区域的原始拷入、重放、`simticks` 刻的真实模拟，然后重置。强烈建议调小 `/fstest count` 并收紧范围。
+- 已知边界：空虚世界的光照（天空光 15、无真实阴影）与生物群系（the_void）可能与现实不同，光敏/群系敏感的装置会以基线失真呈现——这就是诚实的答案。
 
 ### 快照半径与性能（先看这里）
 
@@ -276,10 +282,10 @@ LGPL-3.0-only. The collection layer re-implements concepts from [Carpet TIS Addi
 3. **`<运行目录>/fstest-logs/` 下的一次性文本文件** — 完整存档。文件名形如 `2026-08-26_19-45-12-345_USE_ITEM_ON_BLOCK_at_3_64_-2_Player1.txt`。文件按顺序包含：
    - 头信息：时间戳、玩家、操作类型、锚点坐标、维度、游戏时间、完整配置快照（模式、颜色筛选、次数、范围、策略、`updates`、`duplications`、MTR 刻数、测试选区、目标数）、现实流事件数、计划刻/方块事件的**创建尝试**总数及其中**进入事件流的条数**（尝试数含重复项，即使 `duplications` 为 off）、基线自检结果，以及整次分析的总耗时（每轮 stats 另有单轮耗时）；
    - **现实流**（去重后输出，相同 `坐标 | 签名` 折叠为 `×N` 计数行）；
-   - **基线**（identity 变换）事件流及其与现实的 diff；MTR 模式下基线按模拟刻分节（`BASELINE sim tick #n`），其与现实的 diff 只覆盖瞬时窗口部分（即基线自检）；
+   - **基线**（identity 变换）事件流及其与现实的 diff；定时模式下基线按模拟刻分节（`BASELINE sim tick #n`），其与现实的 diff 只覆盖瞬时窗口部分（即基线自检）；
    - **每一次模拟** 的事件流及其与现实的 diff：D 类模式下第一条即 identity 基线，其后是 D 集（每个非 identity 对称 × `count_d`），再 P 集（`count_p` 次），再 PD 集（`count_pd` 次）；每轮附一行重放诊断（生效根操作数、setBlock 次数、邻居更新派发数、计划刻/方块事件创建尝试数、采样偏移；非空时还有 `sideEffectCtxMismatch N @ x y z …`——列出那些副作用重放落在了与真实不同级联上下文里的移除坐标，其相对时序不再有保证）；
    - 若某轮 diff 的未匹配行作为多重集完全相同，则该轮 diff 标注为 `(order change only)`，不再当作增删；
-   - **聚合汇总**：模拟总数、与参照（现实流；MTR 模式下为基线模拟流）完全一致的次数、不同结果的种类数，每种结果以 `=== Nx [标签] ===`（必要时附 `(order change only …)` 说明）形式给出按监测位置分组的样本 `+`/`-` 行。
+   - **聚合汇总**：模拟总数、与参照（现实流；定时模式下为基线模拟流）完全一致的次数、不同结果的种类数，每种结果以 `=== Nx [标签] ===`（必要时附 `(order change only …)` 说明）形式给出按监测位置分组的样本 `+`/`-` 行。
 
 测试进行期间，聊天栏与控制台会先给一行灰色开始提示（`计划重放 N 轮`），之后每完成 `max(10%, 50)` 轮给一次进度，最后输出完整报告。
 
@@ -290,7 +296,7 @@ LGPL-3.0-only. The collection layer re-implements concepts from [Carpet TIS Addi
 - `+` 行：模拟产生了现实中没有的内容；
 - `-` 行：现实中发生了而模拟缺失的内容；
 - 同一行同时出现在 `+` 和 `-` 里代表**纯顺序差异**（事件相同、先后不同），不是增删；当未匹配行作为多重集完全相同时，日志会直接标注 `(order change only)`，聊天里也会给一行 `（纯顺序差异——事件相同、顺序不同）`；
-- 结果按差异内容聚合计数，如 `50 次 [P#3]:` 后跟该结果的差异明细；与参照完全一致的次数显示在汇总行（MTR 模式下参照为基线模拟，见 [MTR 模式](#mtr-模式多刻模拟)）。
+- 结果按差异内容聚合计数，如 `50 次 [P#3]:` 后跟该结果的差异明细；与参照完全一致的次数显示在汇总行（定时模式下参照为基线模拟，见[定时模式](#定时模式多刻模拟)）。
 
 方向性测试中任何非空 diff 都说明装置在该变换下不对称；位置性测试中的 diff 说明存在位置哈希或区块边界敏感（可用 `chunkborder` 策略专门探测边界效应）。
 
@@ -303,13 +309,13 @@ LGPL-3.0-only. The collection layer re-implements concepts from [Carpet TIS Addi
 
 - **性能 / 快照半径**：快照会读取锚点周围 `(2·range+1)³` 的整个立方体，每一轮重放都要重写其中的非空气方块——成本随 `range³` 增长，再乘以轮数，且**同步跑在服务端线程**上。务必把 `/fstest range` 设为刚好覆盖装置及其级联范围，并先调小次数再测试；默认的 `unlimited`（=48）配合默认次数会卡服。详见[快照半径与性能](#快照半径与性能先看这里)。
 - 当前为 v1 单版本构建（MC 1.21.11）；后续经 Stonecutter 扩展 1.19.4 / 1.21.10 / 26.x 并建立黄金回放回归用例。
-- 光照以中性常量近似（天空 15 / 方块 0），光敏元件结果仅供参考（v2 精确复制光照）。
+- 瞬时模式：光照以中性常量近似（天空 15 / 方块 0）。定时模式：真实的空虚世界（天空光 15、无真实阴影、生物群系 the_void）。两种模式下光敏元件（阳光探测器等）结果都仅供参考——分歧会以基线失真呈现。
 - 实体、爆炸、掉落物不在模拟窗口内；依赖它们的操作会以基线失真告警呈现。
 - 移除侧副作用（`affectNeighborsAfterRemoval`，例如红石线被拆、或活板门使其支撑失效时广播自身功率变化）**无法在模拟空间里直接调用**（该钩子签名要求 `ServerLevel`）。改为按"每次移除"捕获真实钩子发出的派发，并在模拟空间里**于其 setBlock 流程中 vanilla 运行该钩子的同一位置**重新发出——相对顺序与级联上下文因此保持一致，之后由模拟自身的邻居级联接管。操作直接造成的移除与邻居级联内部产生的移除都适用。残留：若某钩子不只是派发、还会改动方块状态，则无法复现；1.21.11 的红石元件（红石线、铁轨、火把、二极管、拉杆、按钮、压力板、观察者、活塞）的移除钩子都只做派发。
 - 方块实体的移除副作用（`BlockEntity#preRemoveSideEffects`）**有意不模拟**。其默认实现是掉落容器内容（生成掉落物实体）；覆写还包括营火/讲台/唱片机/潜影盒/熔炉掉落内容、被拆的幽匿尖啸体尖叫（game event）、以及活塞移动方块的收尾（`PistonMovingBlockEntity#finalTick`）。实体、掉落物与 game event 按规划均在窗口外，且它们都不产生被记录的事件类型，所以当前不影响 diff；写在这里是为了将来若有测试依赖它们，不会被误当成模拟器 bug。
 - 操作窗口内计划刻只记录不执行（与原版同步处理语义一致）；创建尝试会作为事件参与对比。重放无法复现的“操作处理器直接排定的计划刻”（如按钮的弹起）会回填进模拟；方块事件创建**不回填**——模拟必须从重放的更新中自然产生它们，缺了就是真实的失真信号。
 - 模拟空间按规范有意**无视世界高度限制**：垂直 P 偏移可能把快照区域边缘放到 `[minY, maxY]` 之外，这些方块仍然保留且可读。若在这里强制建造高度，线下方的支撑方块或活塞上方的末地烛/羊毛会静默变成虚空空气，导致该轮零事件的假失真。
-- 配置持久化（含 targets 与 MTR 选区）、按标记分组输出、可点击日志路径、每轮/整次分析耗时统计已落地（0.2.0 起）；JSONL 机器输出、精确光照、`hashdelta` 与回归测试仍是 v2 规划。
+- 配置持久化（含 targets、测试选区与范围选择）、按标记分组输出、可点击日志路径、每轮/整次分析耗时统计已落地（0.2.0 起）；JSONL 机器输出、精确光照、`hashdelta` 与回归测试仍是 v2 规划。
 
 ## 构建
 
