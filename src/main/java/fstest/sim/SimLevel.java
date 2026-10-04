@@ -204,18 +204,31 @@ public final class SimLevel extends ServerLevel
 	// Region lifecycle (between simulated runs / analyses)
 	// ------------------------------------------------------------------
 
-	/** Force-loads one chunk (tracked, so analysis end can release every ticket). */
+	/**
+	 * Takes the forced ticket of one chunk (tracked, so it can be released
+	 * again). Deliberately goes through the chunk source instead of
+	 * {@link #setChunkForced}, which synchronously blocks on a full chunk load
+	 * per chunk - serially, on the server thread. The promotion pump brings the
+	 * whole region to a ticking state anyway, and it lets the chunk pipeline
+	 * fill the region in parallel.
+	 */
 	public void fstest$forceChunk(int chunkX, int chunkZ)
 	{
-		this.setChunkForced(chunkX, chunkZ, true);
+		this.getChunkSource().updateChunkForced(new ChunkPos(chunkX, chunkZ), true);
 		this.forcedChunks.add(ChunkPos.asLong(chunkX, chunkZ));
 	}
 
 	/** Releases one chunk ticket previously taken by {@link #fstest$forceChunk}. */
 	public void fstest$releaseChunk(int chunkX, int chunkZ)
 	{
-		this.setChunkForced(chunkX, chunkZ, false);
+		this.getChunkSource().updateChunkForced(new ChunkPos(chunkX, chunkZ), false);
 		this.forcedChunks.remove(ChunkPos.asLong(chunkX, chunkZ));
+	}
+
+	/** The number of chunk tickets currently held by this level. */
+	public int fstest$heldChunkCount()
+	{
+		return this.forcedChunks.size();
 	}
 
 	/** Releases every chunk ticket this level took during analyses. */

@@ -2,6 +2,12 @@ package fstest.config;
 
 /**
  * Test mode selected by {@code /fstest mode}.
+ *
+ * <p>The three test modes are alternatives: {@link #DIRECTIONALITY} runs the
+ * rotation/mirror set, {@link #POSITIONALITY} the translation set, and
+ * {@link #BOTH} (the {@code dp}/{@code pd} aliases) runs the combined set that
+ * draws a random symmetry and a random offset per run. {@link #BOTH} does not
+ * run the other two sets on top of it.
  */
 public enum FstestMode
 {
@@ -22,15 +28,5 @@ public enum FstestMode
 			case "both", "dp", "pd" -> BOTH;
 			default -> null;
 		};
-	}
-
-	public boolean testsDirectionality()
-	{
-		return this == DIRECTIONALITY || this == BOTH;
-	}
-
-	public boolean testsPositionality()
-	{
-		return this == POSITIONALITY || this == BOTH;
 	}
 }

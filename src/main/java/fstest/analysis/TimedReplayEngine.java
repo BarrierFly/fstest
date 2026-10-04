@@ -94,6 +94,14 @@ public final class TimedReplayEngine
 		if (clearMin != null)
 		{
 			level.fstest$clearBox(clearMin, clearMax);
+			if (!sameBox(clearMin, clearMax, simMin, simMax))
+			{
+				// A distant P/PD box has no reason to stay loaded once it is
+				// cleared: holding its chunks until the analysis ends kept one
+				// region's worth of chunk holders and light data alive per run,
+				// which is what made a long batch degrade run over run.
+				simServer.releaseBox(level, clearMin, clearMax);
+			}
 		}
 
 		// ------------------------------------------------------------------
@@ -220,6 +228,11 @@ public final class TimedReplayEngine
 					level.fstest$setBlockCalls(), level.fstest$neighborUpdateDispatches(),
 					session.createdBlockEvents.size(), session.createdTicks.size(), session.events.size(),
 					List.of(), System.nanoTime() - startNanos, preTickEvents, List.copyOf(boundaries), simPhase);
+			// one line per run: makes a degrading batch visible in the log
+			// instead of only felt as a stutter
+			fstest.FstestMod.LOGGER.info("[fstest] timed run {} took {} ms ({} sim ticks, {} events, {} chunks held)",
+					label, (System.nanoTime() - startNanos) / 1_000_000L, simTicks,
+					stats.rawEvents(), level.fstest$heldChunkCount());
 			return new RunOutcome(label,
 					ReplayEngine.canonicalize(session.events, snap.anchor, offset, symmetry), stats, offset);
 		}
@@ -248,6 +261,11 @@ public final class TimedReplayEngine
 				: symmetry.applyToDirection(dispatch.exceptDir());
 		level.fstest$issueDispatch(dispatch.kind(), simPos, dispatch.block(), exceptDir,
 				dispatch.orientation(), dispatch.movedByPiston());
+	}
+
+	private static boolean sameBox(BlockPos aMin, BlockPos aMax, BlockPos bMin, BlockPos bMax)
+	{
+		return aMin.equals(bMin) && aMax.equals(bMax);
 	}
 
 	private static BlockPos minOf(BlockPos a, BlockPos b)

@@ -134,45 +134,53 @@ public final class FstestAnalysis
 			RandomSource rng = RandomSource.create(seedFor(level, anchor));
 			DimensionType dim = level.dimensionType();
 
-			if (cfg.mode().testsDirectionality())
+			// The three modes are alternatives, not a union: "pd" tests a
+			// random symmetry AND a random offset per run, so running the plain
+			// D and P sets on top of it only multiplied the runtime.
+			switch (cfg.mode())
 			{
-				for (Symmetry symmetry : Symmetry.fullSet())
+				case DIRECTIONALITY ->
 				{
-					if (symmetry == Symmetry.IDENTITY)
+					for (Symmetry symmetry : Symmetry.fullSet())
 					{
-						runs.add(baseline); // reuse - identical transform
-						continue;
+						if (symmetry == Symmetry.IDENTITY)
+						{
+							runs.add(baseline); // reuse - identical transform
+							continue;
+						}
+						for (int i = 0; i < cfg.countD(); i++)
+						{
+							runs.add(runOne(level, server, snapshot, symmetry, BlockPos.ZERO,
+									symmetry.label(), realSession, timed, simTicks));
+							progress.tick();
+						}
 					}
-					for (int i = 0; i < cfg.countD(); i++)
+				}
+				case POSITIONALITY ->
+				{
+					for (int i = 0; i < cfg.countP(); i++)
 					{
-						runs.add(runOne(level, server, snapshot, symmetry, BlockPos.ZERO,
-								symmetry.label(), realSession, timed, simTicks));
+						BlockPos offset = OffsetSampler.sample(cfg.strategy(), rng, dim, anchor);
+						runs.add(runOne(level, server, snapshot, Symmetry.IDENTITY, offset,
+								"P#" + (i + 1), realSession, timed, simTicks));
 						progress.tick();
 					}
 				}
-			}
-
-			if (cfg.mode().testsPositionality())
-			{
-				for (int i = 0; i < cfg.countP(); i++)
+				case BOTH ->
 				{
-					BlockPos offset = OffsetSampler.sample(cfg.strategy(), rng, dim, anchor);
-					runs.add(runOne(level, server, snapshot, Symmetry.IDENTITY, offset,
-							"P#" + (i + 1), realSession, timed, simTicks));
-					progress.tick();
+					Symmetry[] set = Symmetry.fullSet();
+					for (int i = 0; i < cfg.countPd(); i++)
+					{
+						Symmetry symmetry = set[rng.nextInt(set.length)];
+						BlockPos offset = OffsetSampler.sample(cfg.strategy(), rng, dim, anchor);
+						runs.add(runOne(level, server, snapshot, symmetry, offset,
+								"PD#" + (i + 1), realSession, timed, simTicks));
+						progress.tick();
+					}
 				}
-			}
-
-			if (cfg.mode() == fstest.config.FstestMode.BOTH)
-			{
-				Symmetry[] set = Symmetry.fullSet();
-				for (int i = 0; i < cfg.countPd(); i++)
+				case NONE ->
 				{
-					Symmetry symmetry = set[rng.nextInt(set.length)];
-					BlockPos offset = OffsetSampler.sample(cfg.strategy(), rng, dim, anchor);
-					runs.add(runOne(level, server, snapshot, symmetry, offset,
-							"PD#" + (i + 1), realSession, timed, simTicks));
-					progress.tick();
+					// no test runs; the baseline self-check above still stands
 				}
 			}
 
@@ -206,25 +214,18 @@ public final class FstestAnalysis
 
 	/**
 	 * Total number of replay executions one analysis will perform: the identity
-	 * baseline plus every run that is not the reused baseline (the D set's
-	 * identity symmetry reuses it rather than replaying again).
+	 * baseline plus every run the selected mode asks for (the D set's identity
+	 * symmetry reuses the baseline rather than replaying again).
 	 */
 	private static int plannedExecutions(FstestConfig cfg)
 	{
-		int n = 1; // baseline self-check
-		if (cfg.mode().testsDirectionality())
+		return switch (cfg.mode())
 		{
-			n += 7 * cfg.countD();
-		}
-		if (cfg.mode().testsPositionality())
-		{
-			n += cfg.countP();
-		}
-		if (cfg.mode() == fstest.config.FstestMode.BOTH)
-		{
-			n += cfg.countPd();
-		}
-		return n;
+			case DIRECTIONALITY -> 1 + 7 * cfg.countD();
+			case POSITIONALITY -> 1 + cfg.countP();
+			case BOTH -> 1 + cfg.countPd();
+			case NONE -> 1;
+		};
 	}
 
 	/** Emits a start notice and throttled progress notices (every 10% or 50 runs, whichever is larger). */

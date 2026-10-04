@@ -77,6 +77,8 @@ public final class SimServer extends MinecraftServer
 	/** How long to wait for a freshly force-loaded region to reach a ticking state before giving up. */
 	private static final int MAX_PROMOTION_ATTEMPTS = 400;
 	private static final int MAX_CHUNK_TASKS_PER_PUMP = 512;
+	/** Chunk pipeline ticks spent letting released chunks actually unload. */
+	private static final int UNLOAD_PUMP_ATTEMPTS = 8;
 	private static final long TICK_BUDGET_NANOS = 50L * 1000L * 1000L;
 	/**
 	 * Fuse against runaway regions: forcing chunks allocates a ticket and a
@@ -315,21 +317,52 @@ public final class SimServer extends MinecraftServer
 		return true;
 	}
 
-	/** Releases every chunk ticket the analysis took and pumps the unloads a little. */
+	/**
+	 * Releases every chunk ticket of one box and lets the pipeline unload it.
+	 * A distant P/PD box would otherwise stay resident until the analysis ends,
+	 * so a long batch would keep one region's worth of chunks alive per run.
+	 */
+	public void releaseBox(SimLevel level, BlockPos min, BlockPos max)
+	{
+		ChunkPos cMin = new ChunkPos(min);
+		ChunkPos cMax = new ChunkPos(max);
+		for (int cx = cMin.x - TICKING_MARGIN_CHUNKS; cx <= cMax.x + TICKING_MARGIN_CHUNKS; cx++)
+		{
+			for (int cz = cMin.z - TICKING_MARGIN_CHUNKS; cz <= cMax.z + TICKING_MARGIN_CHUNKS; cz++)
+			{
+				level.fstest$releaseChunk(cx, cz);
+			}
+		}
+		pumpUnloads(level);
+	}
+
+	/** Releases every chunk ticket the analysis took and pumps the unloads. */
 	public void releaseAll()
 	{
 		for (SimLevel level : this.simLevels())
 		{
 			level.fstest$releaseAllChunks();
 		}
-		for (int i = 0; i < 4; i++)
+		for (SimLevel level : this.simLevels())
+		{
+			pumpUnloads(level);
+		}
+	}
+
+	/**
+	 * Ticks the chunk pipeline far enough for the unqueued chunks to actually
+	 * be dropped: unloading only happens in {@code ChunkMap#tick} ->
+	 * {@code processUnloads}, so draining the task queues alone (as the old
+	 * release path did) released the tickets but never freed the memory.
+	 */
+	private void pumpUnloads(SimLevel level)
+	{
+		for (int i = 0; i < UNLOAD_PUMP_ATTEMPTS; i++)
 		{
 			grantTaskBudget();
 			this.runAllTasks();
-			for (SimLevel level : this.simLevels())
-			{
-				drainChunkSource(level);
-			}
+			drainChunkSource(level);
+			level.getChunkSource().tick(() -> true, false);
 		}
 	}
 

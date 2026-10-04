@@ -5,7 +5,7 @@
     "fstest.mode.none": "不测试",
     "fstest.mode.directionality": "方向性",
     "fstest.mode.positionality": "位置性",
-    "fstest.mode.both": "全部（D+P+PD）",
+    "fstest.mode.both": "方向+位置（PD）",
     "fstest.color.set": "监测器羊毛颜色筛选已设为 %s",
     "fstest.color.all": "全部颜色",
     "fstest.color.unknown": "未知颜色 '%s'。可用 'all' 或羊毛颜色名，例如 light_blue。",
