@@ -1,0 +1,12 @@
+{
+	"required": true,
+	"package": "fstest.mixin.client",
+	"compatibilityLevel": "JAVA_21",
+	"minVersion": "0.8",
+	"client": [
+		"LevelRendererAreasMixin"
+	],
+	"injectors": {
+		"defaultRequire": 1
+	}
+}

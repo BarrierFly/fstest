@@ -6,6 +6,8 @@ A [Fabric](https://fabricmc.net/) / [Carpet](https://github.com/gnembon/fabric-c
 
 ## How it works
 
+**What triggers a simulation.** Only player-initiated operations do — placing, breaking and using blocks reach the capture hooks through `ServerPlayerGameMode`; block updates caused by redstone, dispensers or any other entity never do. In instant mode an operation triggers when it changed a block *and* affected a monitored block synchronously, because that instant stream is all the instant engine compares. In **timed mode** the trigger is wider: with a named area scoped, any player operation targeting a block inside that area triggers, as long as the area holds at least one monitored block. That is deliberate — an operation whose effect only materialises a few ticks later (pressing a button, placing a component that feeds a delay) records nothing in the instant window, and the simulated ticks are precisely what reveals it. Operations outside the scoped area are ignored outright.
+
 ```
 player operation accepted (place/break/use/tool/bucket)
         │  ServerPlayerGameMode mixins wrap the whole synchronous processing
@@ -51,6 +53,7 @@ Key properties:
 | `/fstest scope <unlimited\|r\|area-name>` | The snapshot/simulation **scope**: a number usable as a radius is treated as the radius (r 1..128, default `unlimited` = effective 48); a name selects a registered test area. `/fstest range` is kept as a deprecated alias. |
 | `/fstest mtrarea add <name> <pos1> <pos2>` | Register a named axis-aligned **test area** (each side ≤ 256 blocks). fstest resolves area names only against its own registry - the MicroTimingReplay mod's profiles are a separate thing entirely. |
 | `/fstest mtrarea remove <name>` / `list` / `clear` | Remove one area / list all (annotating the currently scoped one) / remove all. |
+| *(visualization)* | Registered areas are drawn in world space: the scoped one as a green box with a faint fill, the others as grey outlines. Scoped in a single-player world only (the selection is not replicated to clients of a remote server). |
 | `/fstest targets add <color> <x> <y> <z>` | Mark a block position directly (see below). Re-adding the same position recolours it. |
 | `/fstest targets remove <x> <y> <z>` | Remove one target. |
 | `/fstest targets remove color <color>` | Remove every target of that colour. |
@@ -190,6 +193,8 @@ LGPL-3.0-only. The collection layer re-implements concepts from [Carpet TIS Addi
 
 ## 工作原理
 
+**什么会触发一次模拟。** 只有玩家主动操作会——放置、破坏、对目标方块使用物品/工具/桶，这些都经由 `ServerPlayerGameMode` 进入采集钩子；红石级联、发射器或任何实体引起的方块更新都不会。瞬时模式下，操作必须**同步地**影响到被监视方块才会触发，因为瞬时引擎比对的只有那一个瞬时窗口的流。**定时模式**的触发条件更宽：设定了命名选区时，玩家对选区内任意方块的操作都会触发，只要该选区里至少有一个被监视方块。这是刻意的——按按钮、放置一个接入延迟的元件这类操作，效果要过几个刻才显现，瞬时窗口里什么也录不到，而跑模拟刻恰恰就是为了把这种延迟效果暴露出来。选区之外的操作直接忽略。
+
 1. 玩家操作（放置/破坏/对方块使用物品/工具改形/桶装放流体）在服务端受理后，其**整个同步处理过程**被包进一次采集会话；
 2. 真实世界与模拟空间共用同一套采集层（复刻自 TIS Addition 微时序逻辑，LGPL 兼容）：记录订阅位置上的方块状态变化、计划刻/方块事件创建尝试、邻居更新派发等事件，按真实执行顺序排列；
 3. 以操作点为中心做**操作前**快照（方块状态 + 冻结的方块实体 NBT + 计划刻/方块事件队列 + 时间/天气/难度/游戏规则；在本次操作的第一个根 setBlock 应用前的瞬间惰性采集，因此重放根操作时模拟空间才会真正发生变更），在无区块的虚拟世界里按变换重建：
@@ -216,6 +221,7 @@ LGPL-3.0-only. The collection layer re-implements concepts from [Carpet TIS Addi
 | `/fstest scope <unlimited\|r\|选区名>` | 快照/模拟**范围**：能当半径用的数字按半径处理（r 取 1..128，默认 `unlimited` = 实际 48）；名字则选取已注册的测试选区。`/fstest range` 保留为弃用别名。 |
 | `/fstest mtrarea add <名称> <坐标1> <坐标2>` | 注册一个命名的长方体**测试选区**（每条边 ≤ 256 格）。fstest 只在**自己的**选区注册表里解析名字——MicroTimingReplay mod 的 profile 选区是完全独立的东西，互不读取。 |
 | `/fstest mtrarea remove <名称>` / `list` / `clear` | 移除一个选区 / 列出全部（标注当前范围内者）/ 清空。 |
+| *（可视化）* | 已注册的选区会直接画在世界里：当前范围内的那个是绿色线框加淡填充，其余是灰色线框。仅在单人游戏内生效（远程服务器不会把选区同步给客户端）。 |
 | `/fstest targets add <颜色> <x> <y> <z>` | 直接标记一个方块位置（见下）。对同一位置重复执行会改色。 |
 | `/fstest targets remove <x> <y> <z>` | 移除单个目标。 |
 | `/fstest targets remove color <颜色>` | 移除该颜色的全部目标。 |

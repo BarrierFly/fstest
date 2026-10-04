@@ -75,6 +75,32 @@ public final class FstestConfig
 	public static final FstestConfig INSTANCE = new FstestConfig();
 
 	/**
+	 * Immutable copy of the registered areas plus the active scope name,
+	 * republished on every mutation (and on {@link #reset}). The client
+	 * renderer reads this instead of the live maps: those are owned by the
+	 * server thread, and iterating them from the render thread could hit a
+	 * concurrent modification.
+	 */
+	private volatile SelectionSnapshot selection = SelectionSnapshot.EMPTY;
+
+	/** Immutable view of the selection state, safe to read from any thread. */
+	public record SelectionSnapshot(Map<String, Area> areas, String scope)
+	{
+		static final SelectionSnapshot EMPTY = new SelectionSnapshot(Map.of(), null);
+	}
+
+	/** The current selection state; safe to call from the render thread. */
+	public SelectionSnapshot selection()
+	{
+		return this.selection;
+	}
+
+	private void publishSelection()
+	{
+		this.selection = new SelectionSnapshot(Map.copyOf(this.areas), this.scopeArea);
+	}
+
+	/**
 	 * Invoked after every successful mutation (commands, persistence writes
 	 * excepted) so the sticky configuration can be persisted. Registered by the
 	 * persistence layer at server start; {@code reset()} deliberately does not
@@ -106,6 +132,7 @@ public final class FstestConfig
 		INSTANCE.scopeArea = null;
 		INSTANCE.areas.clear();
 		INSTANCE.targets.clear();
+		INSTANCE.publishSelection();
 	}
 
 	public void setChangeListener(Runnable listener)
@@ -117,6 +144,7 @@ public final class FstestConfig
 	/** Fires the persistence hook after a successful mutation; suppressed while loading. */
 	private void changed()
 	{
+		this.publishSelection();
 		if (!this.loading)
 		{
 			this.changeListener.run();

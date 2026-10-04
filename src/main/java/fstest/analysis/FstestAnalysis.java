@@ -52,15 +52,26 @@ public final class FstestAnalysis
 	                           BlockPos anchor, CaptureSession realSession, @Nullable RegionSnapshot preOpSnapshot)
 	{
 		FstestConfig cfg = FstestConfig.INSTANCE;
+		boolean timed = cfg.isTimed();
 
-		if (realSession.rootChanges.isEmpty() && realSession.events.isEmpty())
+		// Something has to be replayable: a recorded block change, a recorded
+		// event, or a scheduled tick the replay backfills. Pure no-ops are
+		// skipped in every mode.
+		boolean replayable = !realSession.rootChanges.isEmpty() || !realSession.events.isEmpty()
+				|| !realSession.createdTicks.isEmpty();
+		if (!replayable)
 		{
 			ReportFormatter.message(player, "fstest.analysis.no_events");
 			return;
 		}
-		if (realSession.events.isEmpty())
+		if (!timed && realSession.events.isEmpty())
 		{
-			// something changed, but no wool-marked monitor subscribed under the selected color
+			// Instant mode compares the simulation's synchronous window against
+			// reality's, so with no recorded marker events there is nothing to
+			// compare. Timed mode deliberately does NOT bail here: an operation
+			// whose effect only materialises after a few ticks (a button, a
+			// placed component feeding a delay) records nothing in the instant
+			// window, and running the simulated ticks is exactly what reveals it.
 			ReportFormatter.message(player, "fstest.analysis.no_markers");
 			return;
 		}
@@ -71,7 +82,6 @@ public final class FstestAnalysis
 			return;
 		}
 
-		boolean timed = cfg.isTimed();
 		int simTicks = timed ? cfg.simTicks() : 0;
 
 		long analysisStart = System.nanoTime();
@@ -104,6 +114,16 @@ public final class FstestAnalysis
 		}
 		String snapshotSource = preOpSnapshot != null ? "pre-operation" : "post-operation fallback";
 
+		if (timed && !snapshot.hasMonitoredBlock)
+		{
+			// Timed mode is permissive about the instant window (see the check
+			// above), so the region has to hold the monitoring point instead:
+			// without one there is nothing for the simulated ticks to observe
+			// and every run would trivially match.
+			ReportFormatter.message(player, "fstest.analysis.no_markers");
+			return;
+		}
+
 		Progress progress = new Progress(player, plannedExecutions(cfg));
 		progress.start();
 
@@ -111,23 +131,29 @@ public final class FstestAnalysis
 		{
 			// Baseline self-check: the identity transform must reproduce reality
 			// bit-for-bit over the instant window, otherwise the simulator is
-			// distorted and comparison output would be meaningless.
+			// distorted and comparison output would be meaningless. Skipped when
+			// reality recorded nothing there (timed mode's late-effect case):
+			// there is no instant stream to reproduce, and the runs are compared
+			// against the baseline simulation's full multi-tick stream anyway.
 			RunOutcome baseline = timed
 					? TimedReplayEngine.run(level, server, snapshot,
 							Symmetry.IDENTITY, BlockPos.ZERO, "baseline", realSession, simTicks)
 					: ReplayEngine.run(level, server, snapshot,
 							Symmetry.IDENTITY, BlockPos.ZERO, "baseline", realSession);
 			progress.tick();
-			List<FstEvent> baselineInstant = timed
-					? baseline.events().subList(0, baseline.stats().preTickEvents())
-					: baseline.events();
-			DiffEngine.Diff baselineDiff = DiffEngine.diff(realSession.events, baselineInstant);
-			if (!baselineDiff.isEmpty())
+			if (!realSession.events.isEmpty())
 			{
-				fstest.record.SimulationLog.write(level, player, kind, anchor, realSession, cfg, snapshotSource,
-						baseline, List.of(), timed, System.nanoTime() - analysisStart);
-				ReportFormatter.reportDistortion(player, baselineDiff);
-				return;
+				List<FstEvent> baselineInstant = timed
+						? baseline.events().subList(0, baseline.stats().preTickEvents())
+						: baseline.events();
+				DiffEngine.Diff baselineDiff = DiffEngine.diff(realSession.events, baselineInstant);
+				if (!baselineDiff.isEmpty())
+				{
+					fstest.record.SimulationLog.write(level, player, kind, anchor, realSession, cfg, snapshotSource,
+							baseline, List.of(), timed, System.nanoTime() - analysisStart);
+					ReportFormatter.reportDistortion(player, baselineDiff);
+					return;
+				}
 			}
 
 			List<ReplayEngine.RunOutcome> runs = new ArrayList<>();

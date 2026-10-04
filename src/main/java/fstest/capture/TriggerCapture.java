@@ -83,6 +83,15 @@ public final class TriggerCapture
 		{
 			return;
 		}
+		if (anchor != null && !inTimedScope(anchor))
+		{
+			// timed mode only ever simulates the selected area: an operation
+			// anywhere else in the world has nothing to do with it, and letting
+			// it through would capture (and analyse) every block the player
+			// touches. Only player-initiated operations reach this hook, so
+			// block updates caused by entities or redstone never trigger it.
+			return;
+		}
 		ActiveOp stale = ACTIVE.get();
 		if (stale != null)
 		{
@@ -102,6 +111,23 @@ public final class TriggerCapture
 		ActiveOp op = new ActiveOp(kind, pos, session, player);
 		RecorderHub.setFirstRootAction(() -> op.snapshot = capturePreOpSnapshot(serverLevel, pos));
 		ACTIVE.set(op);
+	}
+
+	/**
+	 * The timed-mode scope gate: with a named area selected, only operations
+	 * targeting a block inside it may start a capture. Instant mode and timed
+	 * mode without a selection keep the old behaviour (every accepted operation
+	 * anywhere triggers), because there the region is derived from the anchor
+ * *after* the fact.
+	 */
+	private static boolean inTimedScope(BlockPos anchor)
+	{
+		if (!FstestConfig.INSTANCE.isTimed())
+		{
+			return true;
+		}
+		FstestConfig.Area area = FstestConfig.INSTANCE.scopedArea().orElse(null);
+		return area == null || area.contains(anchor);
 	}
 
 	/**

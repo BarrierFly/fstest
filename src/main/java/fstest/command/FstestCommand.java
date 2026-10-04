@@ -374,8 +374,13 @@ public final class FstestCommand
 		}
 		boolean replaced = FstestConfig.INSTANCE.area(name) != null;
 		FstestConfig.INSTANCE.putArea(name, area);
-		return ok(ctx, replaced ? "fstest.mtrarea.overridden" : "fstest.mtrarea.added",
-				yellow(name), posText(area.pos1()), posText(area.pos2()));
+		if (replaced)
+		{
+			return ok(ctx, "fstest.mtrarea.overridden", yellow(name), posText(area.pos1()), posText(area.pos2()));
+		}
+		// the "added" template names the area twice (header + the /fstest scope hint)
+		return ok(ctx, "fstest.mtrarea.added",
+				yellow(name), posText(area.pos1()), posText(area.pos2()), yellow(name));
 	}
 
 	private static int mtrAreaRemove(CommandContext<CommandSourceStack> ctx)

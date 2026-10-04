@@ -143,7 +143,24 @@ public final class Markers
 		return color == null ? Optional.empty() : Optional.of(color);
 	}
 
-	/** End-of-line end-rod rule subscribing neighbouring blocks to block-update events (TIS semantics). */
+	/**
+	 * Fast filter for {@link #dyeColorOf}: true when {@code block} is one of the
+	 * component types that can carry a wool subscription. Lets a region scan
+	 * skip the (comparatively costly) colour lookups for the vast majority of
+	 * positions, which host nothing the recorder cares about.
+	 */
+	public static boolean canHostSubscription(Block block)
+	{
+		return block instanceof ObserverBlock || block instanceof EndRodBlock
+				|| block instanceof PistonBaseBlock || block instanceof MovingPistonBlock
+				|| block instanceof ButtonBlock || block instanceof LeverBlock
+				|| block instanceof RedstoneWallTorchBlock || block instanceof TripWireHookBlock
+				|| block instanceof BaseRailBlock || block instanceof DiodeBlock
+				|| block instanceof RedstoneTorchBlock || block instanceof RedStoneWireBlock
+				|| block instanceof BasePressurePlateBlock;
+	}
+
+	/** End-rod rule subscribing neighbouring blocks to block-update events (TIS semantics). */
 	public static Optional<DyeColor> endRodColorOf(Level world, BlockPos pos)
 	{
 		for (Direction facing : Direction.values())

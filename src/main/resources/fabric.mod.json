@@ -18,6 +18,9 @@
 	"mixins": [
 		"fstest.mixins.json"
 	],
+	"client": [
+		"fstest.client.mixins.json"
+	],
 	"depends": {
 		"fabricloader": "*",
 		"minecraft": "${minecraft_dependency}",

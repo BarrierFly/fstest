@@ -3,14 +3,18 @@ package fstest.sim;
 import fstest.config.FstestConfig;
 import fstest.mixin.LevelTicksAccessor;
 import fstest.mixin.ServerLevelBlockEventsAccessor;
+import fstest.record.Markers;
 import it.unimi.dsi.fastutil.longs.Long2ObjectMap;
 import net.minecraft.core.BlockPos;
+import net.minecraft.core.Direction;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.level.BlockEventData;
 import net.minecraft.world.level.block.Block;
+import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.level.block.state.properties.BlockStateProperties;
 import net.minecraft.world.level.dimension.DimensionType;
 import net.minecraft.world.level.material.Fluid;
 import net.minecraft.world.level.block.entity.BlockEntity;
@@ -48,6 +52,15 @@ public final class RegionSnapshot
 	public final List<BlockEventData> blockEvents = new ArrayList<>();
 	public long realRandomSeed;
 	public boolean seedKnown;
+	/**
+	 * Whether the captured region holds at least one monitored block (a wool
+	 * marker accepted by the colour filter, or a registered target). Timed mode
+	 * uses this as its trigger gate: an operation whose effect only shows up
+	 * after a few simulated ticks records nothing in the instant window, so
+	 * "the region has something to observe" is what decides whether a run is
+	 * worth simulating.
+	 */
+	public boolean hasMonitoredBlock;
 	/** Real world's game/day time at snapshot time (the simulated clock starts here). */
 	public final long gameTime;
 	public final long dayTime;
@@ -144,10 +157,56 @@ public final class RegionSnapshot
 
 		copyScheduledTicks(level, snap);
 		copyBlockEvents(level, snap);
+		snap.hasMonitoredBlock = detectMonitoredBlock(level, snap);
 
 		snap.realRandomSeed = FstestSimWorld.tryCaptureRealRandomSeed(level);
 		snap.seedKnown = true; // best effort; an unreadable seed falls back to a fixed base
 		return snap;
+	}
+
+	/**
+	 * Scans the already-captured region for monitored blocks. Reuses
+	 * {@link #states} instead of walking the box again, and pays the colour
+	 * lookups only for positions that can host a subscription at all.
+	 *
+	 * <p>Covers all three ways a position becomes monitored: a wool-marked
+	 * component, a registered target, and the end-rod rule, which subscribes the
+	 * block an end rod planted on wool points at - that neighbour is often air
+	 * and therefore absent from {@link #states}, so rods are resolved by their
+	 * pointed-at position instead.
+	 */
+	private static boolean detectMonitoredBlock(ServerLevel level, RegionSnapshot snap)
+	{
+		BlockPos.MutableBlockPos cursor = new BlockPos.MutableBlockPos();
+		for (Map.Entry<BlockPos, BlockState> entry : snap.states.entrySet())
+		{
+			BlockPos real = entry.getKey().offset(snap.anchor);
+			Block block = entry.getValue().getBlock();
+			if (Markers.canHostSubscription(block) && Markers.subscriptionAt(level, real).subscribesOperations())
+			{
+				return true;
+			}
+			if (block == Blocks.END_ROD)
+			{
+				Direction facing = entry.getValue().getValue(BlockStateProperties.FACING);
+				// the rod subscribes what it faces, when it stands on accepted wool
+				cursor.set(real.getX() + facing.getStepX(), real.getY() + facing.getStepY(),
+						real.getZ() + facing.getStepZ());
+				if (snap.containsReal(cursor)
+						&& Markers.woolColorAt(level, real.relative(facing.getOpposite())) != null)
+				{
+					return true;
+				}
+			}
+		}
+		for (BlockPos target : FstestConfig.INSTANCE.targets().keySet())
+		{
+			if (snap.containsReal(target) && Markers.targetSubscription(target).isPresent())
+			{
+				return true;
+			}
+		}
+		return false;
 	}
 
 	/** Real-space (clamped) lower corner of the captured region. */
