@@ -88,7 +88,7 @@ public final class TimedReplayEngine
 		// and the AABB union of two distant P/PD boxes would force-load every
 		// chunk in between, which for dimension-wide offsets is billions of
 		// chunks (the heap-exhausting freeze this replaces).
-		simServer.forceAndPump(level, simMin, simMax);
+		long promoteNanos = simServer.forceAndPump(level, simMin, simMax);
 		BlockPos clearMin = level.fstest$lastClearedMin();
 		BlockPos clearMax = level.fstest$lastClearedMax();
 		if (clearMin != null)
@@ -230,8 +230,10 @@ public final class TimedReplayEngine
 					List.of(), System.nanoTime() - startNanos, preTickEvents, List.copyOf(boundaries), simPhase);
 			// one line per run: makes a degrading batch visible in the log
 			// instead of only felt as a stutter
-			fstest.FstestMod.LOGGER.info("[fstest] timed run {} took {} ms ({} sim ticks, {} events, {} chunks held)",
-					label, (System.nanoTime() - startNanos) / 1_000_000L, simTicks,
+			fstest.FstestMod.LOGGER.info("[fstest] timed run {} took {} ms (promote {} ms, release {} ms, "
+							+ "{} sim ticks, {} events, {} chunks held)",
+					label, (System.nanoTime() - startNanos) / 1_000_000L, promoteNanos / 1_000_000L,
+					simServer.fstest$lastReleaseNanos() / 1_000_000L, simTicks,
 					stats.rawEvents(), level.fstest$heldChunkCount());
 			return new RunOutcome(label,
 					ReplayEngine.canonicalize(session.events, snap.anchor, offset, symmetry), stats, offset);

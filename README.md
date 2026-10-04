@@ -53,7 +53,7 @@ Key properties:
 | `/fstest scope <unlimited\|r\|area-name>` | The snapshot/simulation **scope**: a number usable as a radius is treated as the radius (r 1..128, default `unlimited` = effective 48); a name selects a registered test area. `/fstest range` is kept as a deprecated alias. |
 | `/fstest mtrarea add <name> <pos1> <pos2>` | Register a named axis-aligned **test area** (each side ≤ 256 blocks). fstest resolves area names only against its own registry - the MicroTimingReplay mod's profiles are a separate thing entirely. |
 | `/fstest mtrarea remove <name>` / `list` / `clear` | Remove one area / list all (annotating the currently scoped one) / remove all. |
-| *(visualization)* | Registered areas are drawn in world space: the scoped one as a green box with a faint fill, the others as grey outlines. Scoped in a single-player world only (the selection is not replicated to clients of a remote server). |
+| *(visualization)* | Registered areas are drawn in world space once per client tick: the scoped one as a green box with a faint fill, the others as grey outlines (skipped when far from the camera). Single-player only — the selection is not replicated to clients of a remote server. The renderer announces itself in the log once per session (`selection overlay renderer active; N area(s)...`), which is the quickest way to tell a missing overlay from a missing one. |
 | `/fstest targets add <color> <x> <y> <z>` | Mark a block position directly (see below). Re-adding the same position recolours it. |
 | `/fstest targets remove <x> <y> <z>` | Remove one target. |
 | `/fstest targets remove color <color>` | Remove every target of that colour. |
@@ -75,6 +75,7 @@ Settings are sticky and **persisted** to `<config>/fstest.json` (including the t
 - Because reality is not recorded beyond the instant window, the diff **reference becomes the baseline simulation itself** (identity transform, 0 offset): every transformed D/P/PD run's full multi-tick stream is compared against the baseline run's. "Matched" in the report means "matched the baseline simulation".
 - The scope (`/fstest scope`, radius or named area) bounds what is captured and simulated; in timed mode it should cover the device, its cascades *and* every monitored marker - markers outside the scope cannot produce simulated events and will trip the baseline check.
 - Costs: the first timed-mode analysis boots the simulation server (a datapack load - expect a one-off pause of a few seconds). Per run: chunk force-load + promotion, a raw copy-in of the region, the replay and `simticks` ticks of real simulation, then a reset. Lower `/fstest count` values and a tight scope are strongly recommended.
+- **Where the time actually goes.** The simulation space is a real `ServerLevel`, so a run needs its region's chunks loaded and lit. `directionality` runs reuse one location and pay that cost once; every `positionality`/`pd` run samples a fresh offset millions of blocks away, so it pays it again. That per-run chunk acquisition is the dominant cost of timed mode and is not amortised — expect roughly a second per P/PD run, and prefer `directionality` (or the instant engine) when you need many runs. Each run logs its own breakdown: `timed run <label> took <ms> (promote <ms>, release <ms>, ...)`, so the split between chunk promotion and the simulated ticks is visible per run.
 - Caveats: the void world's lighting (sky light 15, no real shadows) and biome (the_void) can diverge from reality for light-/biome-sensitive components - such runs surface as baseline distortion, which is the honest answer.
 
 ### Snapshot radius and performance (read this first)
@@ -119,7 +120,7 @@ Tip: if your contraption has no `+`/`-` lines in the report, no marker at all wa
 
 Every accepted analysis produces output in **three places, simultaneously**:
 
-1. **Player chat** — multi-line coloured report. The header is gold, the per-outcome labels are yellow, the summary is grey, all-match is green, baseline distortion is dark red. The dark-grey line at the end shows the path to the on-disk log and is **clickable** (opens the file). Difference lines are grouped under their monitored position (`@ x y z`).
+1. **Player chat** — multi-line coloured report. The header is gold, the per-outcome labels are yellow, the summary is grey, all-match is green, baseline distortion is dark red. The dark-grey line at the end shows the path to the on-disk log and is **clickable** (clicking it pre-fills a `say <path>` command — vanilla's packet codec rejects the `open_file` click action, so the file cannot be opened straight from chat). Difference lines are grouped under their monitored position (`@ x y z`).
 2. **Server console / `logs/latest.log`** — the same lines, prefixed with `[fstest]`. INFO for normal runs, WARN for baseline distortion, ERROR for analysis crashes. This is the persistent human record; the chat line scrolls away.
 3. **Per-analysis text file under `<run-dir>/fstest-logs/`** — the full record. Filenames look like `2026-08-26_19-45-12-345_USE_ITEM_ON_BLOCK_at_3_64_-2_Player1.txt`. The file holds, in order:
    - a header with timestamp, player, operation, anchor, dimension, game time, the full config snapshot (mode, colour filter, counts, range, strategy, `updates`, `duplications`, MTR ticks, test area, registered-target count), the real-stream event count and the raw tick/block-event creation-attempt counts with how many of them made it into the stream (attempts include duplicates even when `duplications` is off), the baseline self-check result, and the total analysis wall-clock time (each run's stats line carries its own);
@@ -157,7 +158,7 @@ For directionality testing, any non-empty diff means the contraption is **not** 
 - Block-entity removal side effects (`BlockEntity#preRemoveSideEffects`) are deliberately not simulated. Its default implementation drops container contents (spawning item entities); overrides drop campfire / lectern / jukebox / shulker box / furnace contents, scream from a removed sculk shrieker (game events), or finalize a moving piston (`PistonMovingBlockEntity#finalTick`). Entities, item drops and game events are out of scope per the plan, and none of these emits the recorded event kinds, so the diff is unaffected today - listed here so that a future test depending on them is not mistaken for a simulator bug.
 - Scheduled ticks are recorded but not executed inside the operation's synchronous window - matching vanilla semantics, where queued ticks only run in later tick phases.
 - The simulated space deliberately ignores the dimension's build height (per the plan: "the custom virtual world ignores world height limits"): a vertical P offset may place the captured region's edges outside `[minY, maxY]`, and those blocks stay stored and readable. Enforcing the build height there would silently turn supporting ground (or the end rod / wool above) into void air and produce a spurious run with zero events.
-- Configuration persistence (including targets, the test areas and the scope selection), per-marker grouped diff output, the clickable log path and per-run/total analysis timing are implemented (0.2.0+). `hashdelta` strategy, JSONL machine output, exact light copying and regression tests remain v2 items (see `docs/v2-todo.md` for the difficulties involved).
+- Configuration persistence (including targets, the test areas and the scope selection), per-marker grouped diff output, the clickable log path (as a command suggestion) and per-run/total analysis timing are implemented (0.2.0+). `hashdelta` strategy, JSONL machine output, exact light copying and regression tests remain v2 items (see `docs/v2-todo.md` for the difficulties involved).
 - A per-analysis text log is written to `<run-dir>/fstest-logs/` (see [Output destinations](#output-destinations)); the chat log path is clickable. JSONL is planned for v2.
 
 ## Building
@@ -221,7 +222,7 @@ LGPL-3.0-only. The collection layer re-implements concepts from [Carpet TIS Addi
 | `/fstest scope <unlimited\|r\|选区名>` | 快照/模拟**范围**：能当半径用的数字按半径处理（r 取 1..128，默认 `unlimited` = 实际 48）；名字则选取已注册的测试选区。`/fstest range` 保留为弃用别名。 |
 | `/fstest mtrarea add <名称> <坐标1> <坐标2>` | 注册一个命名的长方体**测试选区**（每条边 ≤ 256 格）。fstest 只在**自己的**选区注册表里解析名字——MicroTimingReplay mod 的 profile 选区是完全独立的东西，互不读取。 |
 | `/fstest mtrarea remove <名称>` / `list` / `clear` | 移除一个选区 / 列出全部（标注当前范围内者）/ 清空。 |
-| *（可视化）* | 已注册的选区会直接画在世界里：当前范围内的那个是绿色线框加淡填充，其余是灰色线框。仅在单人游戏内生效（远程服务器不会把选区同步给客户端）。 |
+| *（可视化）* | 已注册的选区每个客户端刻画一次：当前范围内的那个是绿色线框加淡填充，其余是灰色线框（离镜头太远的会跳过）。仅在单人游戏内生效（远程服务器不会把选区同步给客户端）。渲染器每局会在日志里自报一次（`selection overlay renderer active; N area(s)...`），用来最快区分「没渲染出来」和「数据没有」。 |
 | `/fstest targets add <颜色> <x> <y> <z>` | 直接标记一个方块位置（见下）。对同一位置重复执行会改色。 |
 | `/fstest targets remove <x> <y> <z>` | 移除单个目标。 |
 | `/fstest targets remove color <颜色>` | 移除该颜色的全部目标。 |
@@ -242,6 +243,7 @@ LGPL-3.0-only. The collection layer re-implements concepts from [Carpet TIS Addi
 - **基线自检**仍然把守输出：identity 轮的瞬时窗口事件必须与现实记录完全一致，否则报模拟器失真。（多刻部分没有现实对照，只在各模拟轮次与基线模拟之间比较——见下。）
 - 由于现实侧没有瞬时窗口之外的记录，diff 的**参照改为基线模拟本身**（identity 变换、0 偏移）：每个 D/P/PD 变换轮的完整多刻事件流与基线轮对比。报告中的"完全一致"指"与基线模拟一致"。
 - 范围（`/fstest scope`，半径或命名选区）界定被捕获与模拟的区域；定时模式下应覆盖装置、其级联波及范围*以及*全部监测标记——范围外的标记无法产生模拟事件，会触发基线失真。
+- **时间花在哪里。** 模拟空间是真实的 `ServerLevel`，所以每一轮都要把该区域的区块加载并照亮。`directionality` 各轮复用同一位置，这笔开销只付一次；而每一轮 `positionality`/`pd` 都会采到几百万格之外的新偏移，于是再付一次。这份逐轮的区块获取是定时模式的主要开销，且无法摊薄——按每轮 P/PD 大约一秒来预期，需要跑很多轮时请改用 `directionality`（或瞬时引擎）。每轮都会打印自己的耗时拆分：`timed run <标签> took <毫秒> (promote <毫秒>, release <毫秒>, ...)`，区块升级与模拟刻各占多少一眼可见。
 - 成本：第一次定时模式分析要引导模拟服务器（一次数据包加载——预计一次性停顿数秒）。每轮：区块强制加载与提升、区域的原始拷入、重放、`simticks` 刻的真实模拟，然后重置。强烈建议调小 `/fstest count` 并收紧范围。
 - 已知边界：空虚世界的光照（天空光 15、无真实阴影）与生物群系（the_void）可能与现实不同，光敏/群系敏感的装置会以基线失真呈现——这就是诚实的答案。
 
@@ -283,7 +285,7 @@ LGPL-3.0-only. The collection layer re-implements concepts from [Carpet TIS Addi
 
 每一次被受理的分析都会**同时**输出到三个地方：
 
-1. **玩家聊天栏** — 多行带色报告：标题金色、单次结果标签黄色、汇总行灰色、全部一致时绿色、基线失真时深红色；末尾的深灰行显示本次落盘文件的绝对路径，且**可点击**（直接打开文件）。差异行会按监测位置分组（`@ x y z` 小节）。
+1. **玩家聊天栏** — 多行带色报告：标题金色、单次结果标签黄色、汇总行灰色、全部一致时绿色、基线失真时深红色；末尾的深灰行显示本次落盘文件的绝对路径，且**可点击**（点击会填入 `say <路径>` 命令——原版网络层禁止 `open_file` 点击动作，无法直接在聊天栏里打开文件）。差异行会按监测位置分组（`@ x y z` 小节）。
 2. **服务端控制台 / `logs/latest.log`** — 同样的内容加 `[fstest]` 前缀；正常 INFO，基线失真 WARN，分析崩溃 ERROR。这是持久的人眼记录（聊天行会滚走）。
 3. **`<运行目录>/fstest-logs/` 下的一次性文本文件** — 完整存档。文件名形如 `2026-08-26_19-45-12-345_USE_ITEM_ON_BLOCK_at_3_64_-2_Player1.txt`。文件按顺序包含：
    - 头信息：时间戳、玩家、操作类型、锚点坐标、维度、游戏时间、完整配置快照（模式、颜色筛选、次数、范围、策略、`updates`、`duplications`、MTR 刻数、测试选区、目标数）、现实流事件数、计划刻/方块事件的**创建尝试**总数及其中**进入事件流的条数**（尝试数含重复项，即使 `duplications` 为 off）、基线自检结果，以及整次分析的总耗时（每轮 stats 另有单轮耗时）；

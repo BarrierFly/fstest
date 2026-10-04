@@ -119,10 +119,14 @@ public final class SimulationLog
 
 		if (player != null)
 		{
-			// clickable log path (open_file click event; plain text fallback in the log)
+			// The path cannot be sent as a clickable open_file event: vanilla's
+			// packet codec rejects that action on the network (it would fail
+			// the whole system_chat encode and the message never arrives).
+			// Offer the path as a command the client can prefill instead.
 			player.sendSystemMessage(Component.literal("[fstest] full log: " + file.toAbsolutePath())
 					.withStyle(ChatFormatting.DARK_GRAY)
-					.withStyle(style -> style.withClickEvent(new net.minecraft.network.chat.ClickEvent.OpenFile(file.toFile()))));
+					.withStyle(style -> style.withClickEvent(new net.minecraft.network.chat.ClickEvent.SuggestCommand(
+							"say " + file.toAbsolutePath()))));
 		}
 		FstestMod.LOGGER.info("[fstest] simulation log written to {}", file.toAbsolutePath());
 	}

@@ -47,6 +47,14 @@ public final class FstestAreaRenderer
 			return;
 		}
 		FstestConfig.SelectionSnapshot selection = FstestConfig.INSTANCE.selection();
+		// Announced before every early return below: "the renderer ran and saw
+		// nothing" must be distinguishable from "the renderer never ran at all".
+		if (!announced)
+		{
+			announced = true;
+			FstestMod.LOGGER.info("[fstest] selection overlay renderer active; {} area(s) registered, scoped='{}'",
+					selection.areas().size(), selection.scope() == null ? "-" : selection.scope());
+		}
 		if (selection.areas().isEmpty())
 		{
 			return;
@@ -54,7 +62,6 @@ public final class FstestAreaRenderer
 		String scoped = selection.scope();
 		VertexConsumer lines = buffers.getBuffer(RenderTypes.lines());
 		VertexConsumer filled = buffers.getBuffer(RenderTypes.debugFilledBox());
-		boolean drewAny = false;
 		for (Map.Entry<String, FstestConfig.Area> entry : selection.areas().entrySet())
 		{
 			FstestConfig.Area area = entry.getValue();
@@ -64,7 +71,6 @@ public final class FstestAreaRenderer
 			{
 				continue;
 			}
-			drewAny = true;
 			// the box spans whole blocks: from the min corner's corner to the far
 			// corner of the max block, so the outline encloses the selection exactly
 			VoxelShape box = Shapes.box(0.0D, 0.0D, 0.0D,
@@ -78,23 +84,6 @@ public final class FstestAreaRenderer
 			}
 			ShapeRenderer.renderShape(poseStack, lines, box, x, y, z,
 					active ? COLOR_ACTIVE : COLOR_INACTIVE, LINE_WIDTH);
-			if (drewAny && !announced)
-			{
-				announced = true;
-				FstestMod.LOGGER.info("[fstest] selection overlay active: {} area(s), scoped='{}', "
-								+ "drawing '{}' {}x{}x{} at {} {} {}",
-						selection.areas().size(), scoped == null ? "-" : scoped, entry.getKey(),
-						area.sideX() + 1, area.sideY() + 1, area.sideZ() + 1,
-						area.pos1().getX(), area.pos1().getY(), area.pos1().getZ());
-			}
-		}
-		if (!drewAny && !announced)
-		{
-			// no scoped area (or every unscoped one out of reach): say so once so
-			// an empty overlay is never silently mistaken for a broken renderer
-			announced = true;
-			FstestMod.LOGGER.info("[fstest] selection overlay idle: {} area(s) registered, scoped='{}'",
-					selection.areas().size(), scoped == null ? "-" : scoped);
 		}
 	}
 

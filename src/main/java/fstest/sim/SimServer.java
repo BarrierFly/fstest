@@ -73,13 +73,22 @@ public final class SimServer extends MinecraftServer
 {
 	private static final String SCRATCH_DIR = "fstest-sim";
 	private static final String SCRATCH_LEVEL_ID = "level";
-	private static final int TICKING_MARGIN_CHUNKS = 2;
+	private static final int TICKING_MARGIN_CHUNKS = 1;
 	/** How long to wait for a freshly force-loaded region to reach a ticking state before giving up. */
 	private static final int MAX_PROMOTION_ATTEMPTS = 400;
 	private static final int MAX_CHUNK_TASKS_PER_PUMP = 512;
 	/** Chunk pipeline ticks spent letting released chunks actually unload. */
 	private static final int UNLOAD_PUMP_ATTEMPTS = 8;
-	private static final long TICK_BUDGET_NANOS = 50L * 1000L * 1000L;
+	/**
+	 * Per-attempt task budget handed to the server's task loop. Deliberately
+	 * tiny: {@code haveTime()} stays true for this whole window, so
+	 * {@code runAllTasks} keeps draining task queues until it expires, and the
+	 * promotion loop re-grants it on EVERY attempt - a generous budget here
+	 * multiplies by the attempt count and dominated the per-run cost (tens of
+	 * attempts x 50 ms = seconds per run). The loop bounds (attempt count and
+	 * MAX_CHUNK_TASKS_PER_PUMP) already keep this bounded.
+	 */
+	private static final long TICK_BUDGET_NANOS = 2L * 1000L * 1000L;
 	/**
 	 * Fuse against runaway regions: forcing chunks allocates a ticket and a
 	 * chunk holder per chunk on the caller thread, so an oversized box would
@@ -265,8 +274,13 @@ public final class SimServer extends MinecraftServer
 	// Region force-load and promotion (chunk pipeline on the caller thread)
 	// ------------------------------------------------------------------
 
-	/** Force-loads every chunk of the box (plus a ticking margin) and pumps the pipeline until it ticks. */
-	public void forceAndPump(SimLevel level, BlockPos min, BlockPos max)
+	/**
+	 * Force-loads every chunk of the box (plus a ticking margin) and pumps the
+	 * pipeline until it ticks.
+	 *
+	 * @return how long the promotion took, for the per-run timing log
+	 */
+	public long forceAndPump(SimLevel level, BlockPos min, BlockPos max)
 	{
 		ChunkPos cMin = new ChunkPos(min);
 		ChunkPos cMax = new ChunkPos(max);
@@ -285,11 +299,12 @@ public final class SimServer extends MinecraftServer
 				level.fstest$forceChunk(cx, cz);
 			}
 		}
+		long promoteStart = System.nanoTime();
 		for (int attempt = 0; attempt < MAX_PROMOTION_ATTEMPTS; attempt++)
 		{
 			if (allTicking(level, cMin, cMax))
 			{
-				return;
+				return System.nanoTime() - promoteStart;
 			}
 			grantTaskBudget();
 			this.runAllTasks();
@@ -297,8 +312,14 @@ public final class SimServer extends MinecraftServer
 			level.getChunkSource().tick(() -> true, false);
 			((ServerLevelEntityManagerAccessor) (ServerLevel) level).fstest$entityManager().tick();
 		}
-		FstestMod.LOGGER.warn("[fstest] simulated region [{}, {}]..[{}, {}] did not become ticking within {} attempts",
-				cMin.x, cMin.z, cMax.x, cMax.z, MAX_PROMOTION_ATTEMPTS);
+		// the check at the top of the loop cannot observe the result of the last
+		// attempt, so confirm once more before declaring failure
+		if (!allTicking(level, cMin, cMax))
+		{
+			FstestMod.LOGGER.warn("[fstest] simulated region [{}, {}]..[{}, {}] did not become ticking within {} attempts",
+					cMin.x, cMin.z, cMax.x, cMax.z, MAX_PROMOTION_ATTEMPTS);
+		}
+		return System.nanoTime() - promoteStart;
 	}
 
 	private static boolean allTicking(SimLevel level, ChunkPos cMin, ChunkPos cMax)
@@ -333,8 +354,18 @@ public final class SimServer extends MinecraftServer
 				level.fstest$releaseChunk(cx, cz);
 			}
 		}
+		long start = System.nanoTime();
 		pumpUnloads(level);
+		this.lastReleaseNanos = System.nanoTime() - start;
 	}
+
+	/** Wall-clock cost of the last {@link #releaseBox}, for the per-run timing log. */
+	public long fstest$lastReleaseNanos()
+	{
+		return this.lastReleaseNanos;
+	}
+
+	private long lastReleaseNanos;
 
 	/** Releases every chunk ticket the analysis took and pumps the unloads. */
 	public void releaseAll()
