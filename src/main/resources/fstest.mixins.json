@@ -21,6 +21,10 @@
 		"ServerLevelTickListWiringMixin",
 		"ServerPlayerGameModeMixin"
 	],
+	"client": [
+		"client.MinecraftTickMixin",
+		"client.LevelRendererAreasMixin"
+	],
 	"injectors": {
 		"defaultRequire": 1
 	}
