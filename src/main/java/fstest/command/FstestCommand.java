@@ -373,6 +373,12 @@ public final class FstestCommand
 			return fail(ctx, "fstest.mtrarea.too_large", yellow(String.valueOf(FstestConfig.MAX_AREA_SIDE)));
 		}
 		boolean replaced = FstestConfig.INSTANCE.area(name) != null;
+		if (area.sideX() == 0 && area.sideY() == 0 && area.sideZ() == 0)
+		{
+			// a single block cannot exercise any cascade; refuse instead of
+			// storing a selection that silently tests nothing
+			return fail(ctx, "fstest.mtrarea.degenerate", yellow(name), posText(area.pos1()));
+		}
 		FstestConfig.INSTANCE.putArea(name, area);
 		if (replaced)
 		{

@@ -89,6 +89,7 @@
     "fstest.scope.unknown_area": "没有名为 %s 的测试选区（见 /fstest mtrarea list）",
     "fstest.mtrarea.add.usage": "用法：/fstest mtrarea add <名称> <x1> <y1> <z1> <x2> <y2> <z2>",
     "fstest.mtrarea.added": "测试选区 %s 已添加：%s -> %s（用 /fstest scope %s 启用）",
+    "fstest.mtrarea.degenerate": "两个角点重合于 %s，选区 %s 只有一格，无法测试；请重新指定两个不同的角点。",
     "fstest.mtrarea.overridden": "测试选区 %s 已替换：%s -> %s",
     "fstest.mtrarea.removed": "测试选区 %s 已移除",
     "fstest.mtrarea.remove.usage": "用法：/fstest mtrarea remove <名称>",

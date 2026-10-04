@@ -452,14 +452,19 @@ public final class FstestConfig
 
 		public Area
 		{
-			pos1 = new BlockPos(
-					Math.min(pos1.getX(), pos2.getX()),
-					Math.min(pos1.getY(), pos2.getY()),
-					Math.min(pos1.getZ(), pos2.getZ()));
-			pos2 = new BlockPos(
-					Math.max(pos1.getX(), pos2.getX()),
-					Math.max(pos1.getY(), pos2.getY()),
-					Math.max(pos1.getZ(), pos2.getZ()));
+			// both corners must be read from the ORIGINAL arguments: reassigning
+			// pos1 first and then deriving pos2 from it would always yield the
+			// second argument, collapsing the box whenever the second corner is
+			// the smaller one (which is just a matter of the order the player
+			// happened to pick them in)
+			int ax = pos1.getX();
+			int ay = pos1.getY();
+			int az = pos1.getZ();
+			int bx = pos2.getX();
+			int by = pos2.getY();
+			int bz = pos2.getZ();
+			pos1 = new BlockPos(Math.min(ax, bx), Math.min(ay, by), Math.min(az, bz));
+			pos2 = new BlockPos(Math.max(ax, bx), Math.max(ay, by), Math.max(az, bz));
 		}
 
 		/** All six side lengths; longest one must be validated against {@link #MAX_AREA_SIDE}. */

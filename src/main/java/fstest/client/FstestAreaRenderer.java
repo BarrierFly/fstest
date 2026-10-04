@@ -2,6 +2,7 @@ package fstest.client;
 
 import com.mojang.blaze3d.vertex.PoseStack;
 import com.mojang.blaze3d.vertex.VertexConsumer;
+import fstest.FstestMod;
 import fstest.config.FstestConfig;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.renderer.MultiBufferSource;
@@ -31,6 +32,8 @@ public final class FstestAreaRenderer
 	private static final int COLOR_INACTIVE = 0xFF9E9E9E;
 	private static final int COLOR_ACTIVE = 0xFF39FF14;
 	private static final int COLOR_ACTIVE_FILL = 0x2639FF14;
+	/** One confirmation per session, so "I see nothing" can be told apart in the log. */
+	private static boolean announced;
 
 	private FstestAreaRenderer()
 	{
@@ -51,6 +54,7 @@ public final class FstestAreaRenderer
 		String scoped = selection.scope();
 		VertexConsumer lines = buffers.getBuffer(RenderTypes.lines());
 		VertexConsumer filled = buffers.getBuffer(RenderTypes.debugFilledBox());
+		boolean drewAny = false;
 		for (Map.Entry<String, FstestConfig.Area> entry : selection.areas().entrySet())
 		{
 			FstestConfig.Area area = entry.getValue();
@@ -60,6 +64,7 @@ public final class FstestAreaRenderer
 			{
 				continue;
 			}
+			drewAny = true;
 			// the box spans whole blocks: from the min corner's corner to the far
 			// corner of the max block, so the outline encloses the selection exactly
 			VoxelShape box = Shapes.box(0.0D, 0.0D, 0.0D,
@@ -73,6 +78,23 @@ public final class FstestAreaRenderer
 			}
 			ShapeRenderer.renderShape(poseStack, lines, box, x, y, z,
 					active ? COLOR_ACTIVE : COLOR_INACTIVE, LINE_WIDTH);
+			if (drewAny && !announced)
+			{
+				announced = true;
+				FstestMod.LOGGER.info("[fstest] selection overlay active: {} area(s), scoped='{}', "
+								+ "drawing '{}' {}x{}x{} at {} {} {}",
+						selection.areas().size(), scoped == null ? "-" : scoped, entry.getKey(),
+						area.sideX() + 1, area.sideY() + 1, area.sideZ() + 1,
+						area.pos1().getX(), area.pos1().getY(), area.pos1().getZ());
+			}
+		}
+		if (!drewAny && !announced)
+		{
+			// no scoped area (or every unscoped one out of reach): say so once so
+			// an empty overlay is never silently mistaken for a broken renderer
+			announced = true;
+			FstestMod.LOGGER.info("[fstest] selection overlay idle: {} area(s) registered, scoped='{}'",
+					selection.areas().size(), scoped == null ? "-" : scoped);
 		}
 	}
 

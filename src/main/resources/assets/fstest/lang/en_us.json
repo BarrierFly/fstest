@@ -89,6 +89,7 @@
     "fstest.scope.unknown_area": "No test area named %s (see /fstest mtrarea list)",
     "fstest.mtrarea.add.usage": "Usage: /fstest mtrarea add <name> <x1> <y1> <z1> <x2> <y2> <z2>",
     "fstest.mtrarea.added": "Test area %s added: %s -> %s (use with /fstest scope %s)",
+    "fstest.mtrarea.degenerate": "Both corners land on %s, so test area %s is a single block and cannot test anything; pick two different corners.",
     "fstest.mtrarea.overridden": "Test area %s replaced: %s -> %s",
     "fstest.mtrarea.removed": "Test area %s removed",
     "fstest.mtrarea.remove.usage": "Usage: /fstest mtrarea remove <name>",
