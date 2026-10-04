@@ -148,6 +148,23 @@ For directionality testing, any non-empty diff means the contraption is **not** 
 - "No monitor subscribed under the selected wool colour near the operation; place wool next to your redstone components or register a /fstest targets marker." → the colour filter excludes your wool/target (`/fstest color all` or match the colour); or there is no wool in the component's subscription position (see the table) and no `/fstest targets` marker on the component; or it is outside the snapshot radius (raise `/fstest range`, but keep it as small as the device allows — see [Snapshot radius and performance](#snapshot-radius-and-performance-read-this-first)). If you registered targets, run `/fstest targets query`: a target annotated "(excluded by the current color filter)" is being filtered out.
 - "Simulator distortion detected! ... baseline differences ..." → your contraption uses something the v1 simulator does not cover (light-sensitive components, entities, explosions, piston move-shape effects on rails/fences, etc.). The per-file log under `fstest-logs/` will show which `+`/`-` lines the baseline disagrees on — that is the first thing to fix.
 
+## 0.4.0 changes
+
+**Added**
+- **Selection overlay** — registered test areas are drawn in world space: the scoped one as a green box with a faint fill, the others as grey outlines. Single-player only (the selection is not replicated to clients of a remote server).
+
+**Changed**
+- **`both`/`pd` runs the PD set only.** It previously ran the D set, the P set *and* the PD set, so enabling it tripled the work. The three test modes are now alternatives.
+- **Wider trigger in timed mode.** With a named area scoped, any player operation inside it triggers a simulation, as long as the area holds at least one monitored block. Previously an operation had to affect a monitored block *synchronously*, which excluded anything whose effect only appears a few ticks later (buttons, components feeding a delay) — precisely what timed mode exists to test. Operations outside the scoped area are ignored. Instant mode is unchanged. The baseline self-check is skipped when reality recorded no instant events, since there is nothing to reproduce against.
+
+**Fixed**
+- Timed mode exhausted the heap on large P/PD offsets: it force-loaded the axis-aligned union of the previous run's box (to be cleared) and the new one, which for dimension-wide offsets is billions of chunks. Only the new box is loaded now, and a box above 1024 chunks is refused outright.
+- Timed runs no longer accumulate chunks: a distant box is released as soon as it is cleared, and the release actually unloads (unloading only runs in the chunk map's tick, which the old release path never called), so memory is reclaimed during and after a batch.
+- Per-run cost: the promotion pump handed the server's task loop a 50 ms budget and re-granted it on every attempt, so the budget multiplied by the attempt count and dominated each run. The budget is now 2 ms, and the ticking margin is one chunk instead of two (9 chunks per box instead of 25).
+- `/fstest mtrarea add` always stored the second corner as typed, collapsing the selection to a single block whenever that corner was the smaller one. Both corners are now read from the original arguments, and coinciding corners are rejected.
+- `/fstest mtrarea add` printed its raw template with `%s` placeholders (four placeholders, three arguments).
+- The full-log chat line used an `open_file` click event, which the packet codec rejects on the network — the whole `system_chat` packet failed to encode and the message never arrived.
+
 ## v1 scope & limitations
 
 - **Performance / snapshot radius**: the snapshot reads the whole `(2·range+1)³` cube around the anchor, and every replay run re-writes its non-air blocks — cost grows with `range³` and is multiplied by the number of runs, all **synchronously on the server thread**. Always set `/fstest range` to just cover the contraption and its cascades, and lower the counts while iterating; the default `unlimited` (= 48) with default counts will stall the server. See [Snapshot radius and performance](#snapshot-radius-and-performance-read-this-first).
@@ -158,7 +175,7 @@ For directionality testing, any non-empty diff means the contraption is **not** 
 - Block-entity removal side effects (`BlockEntity#preRemoveSideEffects`) are deliberately not simulated. Its default implementation drops container contents (spawning item entities); overrides drop campfire / lectern / jukebox / shulker box / furnace contents, scream from a removed sculk shrieker (game events), or finalize a moving piston (`PistonMovingBlockEntity#finalTick`). Entities, item drops and game events are out of scope per the plan, and none of these emits the recorded event kinds, so the diff is unaffected today - listed here so that a future test depending on them is not mistaken for a simulator bug.
 - Scheduled ticks are recorded but not executed inside the operation's synchronous window - matching vanilla semantics, where queued ticks only run in later tick phases.
 - The simulated space deliberately ignores the dimension's build height (per the plan: "the custom virtual world ignores world height limits"): a vertical P offset may place the captured region's edges outside `[minY, maxY]`, and those blocks stay stored and readable. Enforcing the build height there would silently turn supporting ground (or the end rod / wool above) into void air and produce a spurious run with zero events.
-- Configuration persistence (including targets, the test areas and the scope selection), per-marker grouped diff output, the clickable log path (as a command suggestion) and per-run/total analysis timing are implemented (0.2.0+). `hashdelta` strategy, JSONL machine output, exact light copying and regression tests remain v2 items (see `docs/v2-todo.md` for the difficulties involved).
+- Configuration persistence (including targets, the test areas and the scope selection), per-marker grouped diff output, the clickable log path (as a command suggestion), per-run/total analysis timing and the world-space selection overlay (0.4.0) are implemented. `hashdelta` strategy, JSONL machine output, exact light copying and regression tests remain v2 items (see `docs/v2-todo.md` for the difficulties involved).
 - A per-analysis text log is written to `<run-dir>/fstest-logs/` (see [Output destinations](#output-destinations)); the chat log path is clickable. JSONL is planned for v2.
 
 ## Building
@@ -313,6 +330,23 @@ LGPL-3.0-only. The collection layer re-implements concepts from [Carpet TIS Addi
 - "No monitor subscribed under the selected wool colour near the operation; place wool next to your redstone components or register a /fstest targets marker." → 颜色筛选器把羊毛/目标过滤掉了（`/fstest color all` 或换成对应色）；或组件订阅位置没放羊毛（见上表）、组件上也没注册 target；或在快照半径之外（调大 `/fstest range`，但保持装置所需的最小值——见[快照半径与性能](#快照半径与性能先看这里)）。若已注册目标，执行 `/fstest targets query`：被标注"（被当前颜色筛选排除）"的就是被筛掉的。
 - "Simulator distortion detected! ... baseline differences ..." → 装置里有 v1 模拟器没覆盖到的东西（光敏元件、依赖实体的部分、爆炸、铁轨/栅栏的活塞搬移形状等）。看 `fstest-logs/` 里对应文件，基线 diff 行就是排查起点。
 
+## 0.4.0 变更
+
+**新增**
+- **选区可视化** —— 已注册的测试选区直接画在世界里：当前范围内的那个是绿色线框加淡填充，其余是灰色线框。仅在单人游戏内生效（远程服务器不会把选区同步给客户端）。
+
+**变更**
+- **`both`/`pd` 只跑 PD 组**。此前会连跑 D 组、P 组和 PD 组，一开就是三倍的工作量。三种测试模式现在是互斥的。
+- **定时模式的触发条件放宽**。设定了命名选区时，玩家对选区内任意方块的操作都会触发模拟，只要选区内至少有一个被监视方块。此前要求操作**同步地**影响到被监视方块，这把「效果要过几个刻才显现」的操作（按钮、接入延迟的元件）全排除在外——而那恰恰是定时模式存在的意义。选区之外的操作直接忽略。瞬时模式不变。现实侧没有录到瞬时事件时会跳过基线自检（没有可比对的流），各轮仍与基线的多刻流比对。
+
+**修复**
+- 定时模式在大 P/PD 偏移下会耗尽堆内存：它会去强载「上一轮待清空的盒子」与「新盒子」的轴对齐并集，在全维度范围的偏移下那是几十亿个区块。现在只加载新盒子，超过 1024 区块的区域直接拒绝。
+- 定时各轮不再累积区块：远处盒子清空后立即释放，且释放真的会卸载（卸载只发生在区块映射的 tick 里，而旧的释放路径从不调用它），内存因而能在批次进行中和结束后被回收。
+- 单轮开销：promotion 泵动每次迭代都给服务端任务循环重新发放一次 50ms 预算，该预算被迭代次数乘放大后主导了每轮耗时。预算改为 2ms，ticking 余量从 2 个区块降为 1 个区块，每箱 9 块（原 25）。
+- `/fstest mtrarea add` 总是把第二个角点存成你输入的值，当那个角点恰好是较小角时，选区会塌成一格。现在两个角都从原始参数读取，两角重合则直接拒绝。
+- `/fstest mtrarea add` 打印的是带 `%s` 占位符的原始模板（4 个占位符，只传了 3 个参数）。
+- 聊天里的完整日志路径行原先使用 `open_file` 点击动作，网络层的封包编解码会拒绝它——整个 `system_chat` 包编码失败，消息根本发不出去。
+
 ## 版本与限制
 
 - **性能 / 快照半径**：快照会读取锚点周围 `(2·range+1)³` 的整个立方体，每一轮重放都要重写其中的非空气方块——成本随 `range³` 增长，再乘以轮数，且**同步跑在服务端线程**上。务必把 `/fstest range` 设为刚好覆盖装置及其级联范围，并先调小次数再测试；默认的 `unlimited`（=48）配合默认次数会卡服。详见[快照半径与性能](#快照半径与性能先看这里)。
@@ -323,7 +357,7 @@ LGPL-3.0-only. The collection layer re-implements concepts from [Carpet TIS Addi
 - 方块实体的移除副作用（`BlockEntity#preRemoveSideEffects`）**有意不模拟**。其默认实现是掉落容器内容（生成掉落物实体）；覆写还包括营火/讲台/唱片机/潜影盒/熔炉掉落内容、被拆的幽匿尖啸体尖叫（game event）、以及活塞移动方块的收尾（`PistonMovingBlockEntity#finalTick`）。实体、掉落物与 game event 按规划均在窗口外，且它们都不产生被记录的事件类型，所以当前不影响 diff；写在这里是为了将来若有测试依赖它们，不会被误当成模拟器 bug。
 - 操作窗口内计划刻只记录不执行（与原版同步处理语义一致）；创建尝试会作为事件参与对比。重放无法复现的“操作处理器直接排定的计划刻”（如按钮的弹起）会回填进模拟；方块事件创建**不回填**——模拟必须从重放的更新中自然产生它们，缺了就是真实的失真信号。
 - 模拟空间按规范有意**无视世界高度限制**：垂直 P 偏移可能把快照区域边缘放到 `[minY, maxY]` 之外，这些方块仍然保留且可读。若在这里强制建造高度，线下方的支撑方块或活塞上方的末地烛/羊毛会静默变成虚空空气，导致该轮零事件的假失真。
-- 配置持久化（含 targets、测试选区与范围选择）、按标记分组输出、可点击日志路径、每轮/整次分析耗时统计已落地（0.2.0 起）；JSONL 机器输出、精确光照、`hashdelta` 与回归测试仍是 v2 规划。
+- 配置持久化（含 targets、测试选区与范围选择）、按标记分组输出、可点击日志路径、每轮/整次分析耗时统计，以及世界内选区可视化均已落地（可视化见 0.4.0）；JSONL 机器输出、精确光照、`hashdelta` 与回归测试仍是 v2 规划。
 
 ## 构建
 
