@@ -10,6 +10,7 @@ import it.unimi.dsi.fastutil.longs.LongOpenHashSet;
 import it.unimi.dsi.fastutil.longs.LongSet;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
+import net.minecraft.core.SectionPos;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.resources.ResourceKey;
 import net.minecraft.server.level.ServerLevel;
@@ -24,7 +25,10 @@ import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.Blocks;
+import net.minecraft.world.level.block.entity.BlockEntity;
 import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.level.chunk.LevelChunk;
+import net.minecraft.world.level.chunk.LevelChunkSection;
 import net.minecraft.world.level.dimension.LevelStem;
 import net.minecraft.world.level.material.Fluid;
 import net.minecraft.world.level.material.FluidState;
@@ -63,6 +67,23 @@ public final class SimLevel extends ServerLevel
 	private final TickRateManager tickRateManager;
 	/** Chunk tickets taken by the timed engine, released when the analysis ends. */
 	private final LongSet forcedChunks = new LongOpenHashSet();
+	/**
+	 * Section keys ({@link SectionPos#asLong(int, int, int)}) written since the
+	 * last wipe. The wipe walks these instead of the whole snapshot box: a volume
+	 * scan costs {@code (2r+1)^3} chunk lookups per run, which at the default
+	 * radius is ~900k for a device that occupies a few hundred blocks.
+	 *
+	 * <p>Recording happens on the single {@code setBlock} funnel plus two
+	 * fallbacks ({@code LevelChunk#setBlockState} direct callers and block
+	 * entity installation), so blocks the simulated ticks create on their own -
+	 * spreading fluid, lava meeting water, a piston pushing - are covered just
+	 * like the blocks copied in from the snapshot.
+	 */
+	private final LongSet dirtySections = new LongOpenHashSet();
+	/** Positions that received a block entity since the last wipe. */
+	private final LongSet dirtyBlockEntities = new LongOpenHashSet();
+	/** Whether writes are being recorded right now (off during the wipe itself). */
+	private boolean trackingWrites;
 	@Nullable
 	private BlockPos lastClearedMin;
 	@Nullable
@@ -240,6 +261,117 @@ public final class SimLevel extends ServerLevel
 			this.setChunkForced(pos.x, pos.z, false);
 		}
 		this.forcedChunks.clear();
+		// the chunks these sections lived in are on their way out, so the
+		// bookkeeping would only name positions nobody can read any more
+		this.dirtySections.clear();
+		this.dirtyBlockEntities.clear();
+	}
+
+	/**
+	 * Starts recording the sections this level writes to, so the next
+	 * {@link #fstest$clearBox} knows where the previous run left something.
+	 * Must be armed before the snapshot copy-in - that copy is itself a write.
+	 */
+	public void fstest$beginTracking()
+	{
+		this.dirtySections.clear();
+		this.dirtyBlockEntities.clear();
+		this.trackingWrites = true;
+	}
+
+	/** Stops recording, and returns the "sections/blockEntities" tally for the run's stats line. */
+	public String fstest$endTracking()
+	{
+		this.trackingWrites = false;
+		return this.dirtySections.size() + "/" + this.dirtyBlockEntities.size();
+	}
+
+	/**
+ * The chunk a write at {@code pos} belongs to, or null when it is not resident.
+ *
+ * <p>Bulk callers use this to resolve the chunk once instead of once per block:
+ * {@code Level#getBlockState} and {@code Level#getChunkAt} both go through a
+ * {@code ChunkMap} holder lookup, and a snapshot copy pays two of them per
+ * copied block.
+ */
+	public @Nullable LevelChunk fstest$chunkForWrite(BlockPos pos)
+	{
+		return this.getChunkSource().getChunkNow(
+				SectionPos.blockToSectionCoord(pos.getX()),
+				SectionPos.blockToSectionCoord(pos.getZ()));
+	}
+
+	/**
+	 * {@code setBlock(pos, state, RAW_FLAGS, 0)} with the chunk already resolved.
+	 *
+	 * <p>Step for step the same as {@code Level#setBlock} with those flags:
+	 * {@code RAW_FLAGS} carries none of the neighbour / shape / client bits, so
+	 * the only things {@code Level#setBlock} adds around
+	 * {@code LevelChunk#setBlockState} are the bounds test below, the two chunk
+	 * lookups this skips, the no-op {@code setBlocksDirty}, and the POI refresh
+	 * - which still runs. What it saves is one chunk-holder lookup and one
+	 * section re-read per block.
+	 *
+	 * <p>The heightmaps, section-emptiness bookkeeping, light queueing and block
+	 * entity handling all live in {@code LevelChunk#setBlockState} and are
+	 * deliberately left in place: a real {@code ServerLevel} has to stay
+	 * self-consistent for the next run, which is exactly what the chunkless
+	 * instant engine does not have to care about.
+	 */
+	public void fstest$storeState(LevelChunk chunk, BlockPos pos, BlockState state)
+	{
+		// LevelChunk indexes its section array with the raw block Y, so a
+		// vertical P offset that leaves the build height must be refused here,
+		// exactly as Level#setBlock refuses it.
+		if (!this.isInValidBounds(pos))
+		{
+			return;
+		}
+		BlockState previous = chunk.setBlockState(pos, state, RAW_FLAGS);
+		if (previous == null)
+		{
+			return; // the section or the block was already in that state
+		}
+		BlockState current = chunk.getBlockState(pos);
+		if (current == state)
+		{
+			if (previous != current)
+			{
+				this.setBlocksDirty(pos, previous, current);
+			}
+			this.updatePOIOnBlockStateChange(pos, previous, current);
+		}
+		this.fstest$markDirty(pos);
+	}
+
+	private void fstest$markDirty(BlockPos pos)
+	{
+		if (this.trackingWrites)
+		{
+			this.dirtySections.add(SectionPos.asLong(pos));
+		}
+	}
+
+	private void fstest$markDirtyBlockEntity(BlockPos pos)
+	{
+		if (this.trackingWrites)
+		{
+			this.dirtySections.add(SectionPos.asLong(pos));
+			this.dirtyBlockEntities.add(pos.asLong());
+		}
+	}
+
+	/**
+	 * Records a write that reached {@code LevelChunk#setBlockState} without
+	 * passing through {@link Level#setBlock}. Called from a mixin, so the
+	 * instanceof test is what keeps the real world's hot path untouched.
+	 */
+	public static void fstest$markDirtyWrite(Level level, BlockPos pos)
+	{
+		if (level instanceof SimLevel sim)
+		{
+			sim.fstest$markDirty(pos);
+		}
 	}
 
 	public void fstest$rememberClearedBox(BlockPos min, BlockPos max)
@@ -259,57 +391,161 @@ public final class SimLevel extends ServerLevel
 	}
 
 	/**
-	 * Resets everything a previous simulated run may have left behind inside
-	 * the given real-space box: blocks back to air (raw flags - no cascades),
-	 * block entities torn down by that, every scheduled tick within the box,
-	 * every pending block event, and the (never-ticked) leftover entities.
+	 * Resets everything a previous simulated run may have left behind: blocks
+	 * back to air, the block entities among them torn down, every scheduled
+	 * tick, every pending block event, and the (never-ticked) leftover entities.
+	 *
+	 * <p>Only what the previous run actually wrote to is walked - see
+	 * {@link #dirtySections}. A whole-box scan would also reach blocks the run
+	 * created outside the snapshot bounds (a cascade escaping the region), but
+	 * those are recorded too, and the scan costs one chunk-status lookup per
+	 * position in the box on every single run.
+	 *
+	 * @return wall-clock cost of this wipe, for the per-run timing breakdown
 	 */
-	public void fstest$clearBox(BlockPos min, BlockPos max)
+	public long fstest$clearBox()
 	{
-		BlockPos.MutableBlockPos cursor = new BlockPos.MutableBlockPos();
-		for (int x = min.getX(); x <= max.getX(); x++)
+		long startNanos = System.nanoTime();
+		boolean wasTracking = this.trackingWrites;
+		this.trackingWrites = false;
+		try
 		{
-			for (int y = min.getY(); y <= max.getY(); y++)
+			LongSet dirtyChunks = new LongOpenHashSet();
+			for (long sectionKey : this.dirtySections)
 			{
-				for (int z = min.getZ(); z <= max.getZ(); z++)
+				dirtyChunks.add(ChunkPos.asLong(SectionPos.x(sectionKey), SectionPos.z(sectionKey)));
+			}
+			this.fstest$wipeDirtyBlocks();
+			this.fstest$wipeDirtyBlockEntities();
+			this.fstest$wipeDirtyTicks(((LevelTicksAccessor) this.getBlockTicks()).fstest$getAllContainers(),
+					dirtyChunks);
+			this.fstest$wipeDirtyTicks(((LevelTicksAccessor) this.getFluidTicks()).fstest$getAllContainers(),
+					dirtyChunks);
+			// discard leftovers from earlier runs (drops etc.); copy first - the
+			// live iterable is backed by the entity section storage
+			List<Entity> leftover = new ArrayList<>();
+			this.getAllEntities().forEach(leftover::add);
+			for (Entity entity : leftover)
+			{
+				entity.discard();
+			}
+			((ServerLevelBlockEventsAccessor) (ServerLevel) this).fstest$getBlockEvents().clear();
+		}
+		finally
+		{
+			this.trackingWrites = wasTracking;
+		}
+		return System.nanoTime() - startNanos;
+	}
+
+	/**
+	 * Clears every block in every section the previous run wrote to. The read
+	 * goes straight at the chunk's section array (skipping all-air sections
+	 * wholesale); the write still goes through {@code setBlock} with raw flags,
+	 * so heightmaps, section-emptiness and light stay consistent for whatever
+	 * the next run copies in.
+	 */
+	private void fstest$wipeDirtyBlocks()
+	{
+		if (this.dirtySections.isEmpty())
+		{
+			return;
+		}
+		BlockState air = Blocks.AIR.defaultBlockState();
+		BlockPos.MutableBlockPos cursor = new BlockPos.MutableBlockPos();
+		long[] sections = this.dirtySections.toLongArray();
+		for (long sectionKey : sections)
+		{
+			int sectionX = SectionPos.x(sectionKey);
+			int sectionY = SectionPos.y(sectionKey);
+			int sectionZ = SectionPos.z(sectionKey);
+			// getChunkNow, not getChunk: a section whose chunk is already gone
+			// has nothing left to clear, and asking for it would load one
+			LevelChunk chunk = this.getChunkSource().getChunkNow(sectionX, sectionZ);
+			if (chunk == null)
+			{
+				continue;
+			}
+			int index = chunk.getSectionIndexFromSectionY(sectionY);
+			if (index < 0 || index >= chunk.getSectionsCount())
+			{
+				continue;
+			}
+			LevelChunkSection section = chunk.getSection(index);
+			if (section == null || section.hasOnlyAir())
+			{
+				continue;
+			}
+			int baseX = sectionX << 4;
+			int baseY = sectionY << 4;
+			int baseZ = sectionZ << 4;
+			for (int localY = 0; localY < 16; localY++)
+			{
+				for (int localZ = 0; localZ < 16; localZ++)
 				{
-					cursor.set(x, y, z);
-					BlockState state = this.getBlockState(cursor);
-					if (!state.isAir())
+					for (int localX = 0; localX < 16; localX++)
 					{
-						this.setBlock(cursor, Blocks.AIR.defaultBlockState(), RAW_FLAGS, 0);
+						if (section.getBlockState(localX, localY, localZ).isAir())
+						{
+							continue;
+						}
+						this.fstest$storeState(chunk, cursor.set(baseX | localX, baseY | localY, baseZ | localZ),
+								air);
 					}
 				}
 			}
 		}
-		// discard leftovers from earlier runs (drops etc.); copy first - the
-		// live iterable is backed by the entity section storage
-		List<Entity> leftover = new ArrayList<>();
-		this.getAllEntities().forEach(leftover::add);
-		for (Entity entity : leftover)
-		{
-			entity.discard();
-		}
-		clearTicks(((LevelTicksAccessor) this.getBlockTicks()).fstest$getAllContainers(), min, max);
-		clearTicks(((LevelTicksAccessor) this.getFluidTicks()).fstest$getAllContainers(), min, max);
-		((ServerLevelBlockEventsAccessor) (ServerLevel) this).fstest$getBlockEvents().clear();
+		this.dirtySections.clear();
 	}
 
-	private static void clearTicks(Long2ObjectMap<LevelChunkTicks<?>> containers, BlockPos min, BlockPos max)
+	/**
+	 * Removes the block entities the previous run installed. Mostly redundant
+	 * with the block wipe (vanilla drops the block entity when its block goes),
+	 * but a block entity can outlive its block - a finalised moving piston, an
+	 * entity-backed one whose state was never cleared - and such a leftover sits
+	 * at an all-air position the block wipe skips.
+	 */
+	private void fstest$wipeDirtyBlockEntities()
 	{
-		for (Object value : containers.values())
+		if (this.dirtyBlockEntities.isEmpty())
 		{
-			@SuppressWarnings("unchecked")
-			LevelChunkTicks<Object> container = (LevelChunkTicks<Object>) value;
-			container.removeIf(tick -> boxContains(min, max, tick.pos()));
+			return;
+		}
+		long[] positions = this.dirtyBlockEntities.toLongArray();
+		this.dirtyBlockEntities.clear();
+		for (long packed : positions)
+		{
+			BlockPos pos = BlockPos.of(packed);
+			LevelChunk chunk = this.getChunkSource().getChunkNow(
+					SectionPos.blockToSectionCoord(pos.getX()),
+					SectionPos.blockToSectionCoord(pos.getZ()));
+			if (chunk != null)
+			{
+				chunk.removeBlockEntity(pos);
+			}
 		}
 	}
 
-	private static boolean boxContains(BlockPos min, BlockPos max, BlockPos pos)
+	/**
+	 * Empties the tick containers of every chunk the previous run wrote to.
+	 *
+	 * <p>Whole containers, keyed by chunk rather than filtered by the run's box:
+	 * a scheduled tick can be created outside the snapshot bounds by the same
+	 * cascade that writes outside them, and a box filter would let it survive
+	 * into the next run - where it would fire at a position the transform never
+	 * put anything at. Emptied containers also re-sync themselves: an empty
+	 * container's stale entry in {@code LevelTicks#nextTickForContainer} is
+	 * dropped on the next collect pass because its head is null.
+	 */
+	private static void fstest$wipeDirtyTicks(Long2ObjectMap<LevelChunkTicks<?>> containers, LongSet dirtyChunks)
 	{
-		return pos.getX() >= min.getX() && pos.getX() <= max.getX()
-				&& pos.getY() >= min.getY() && pos.getY() <= max.getY()
-				&& pos.getZ() >= min.getZ() && pos.getZ() <= max.getZ();
+		for (Long2ObjectMap.Entry<LevelChunkTicks<?>> entry : containers.long2ObjectEntrySet())
+		{
+			if (dirtyChunks.contains(entry.getLongKey()))
+			{
+				entry.getValue().removeIf(tick -> true);
+			}
+		}
 	}
 
 	// ------------------------------------------------------------------
@@ -330,7 +566,17 @@ public final class SimLevel extends ServerLevel
 	public boolean setBlock(BlockPos pos, BlockState state, int flags, int recursionLeft)
 	{
 		this.setBlockCalls++;
+		this.fstest$markDirty(pos);
 		return super.setBlock(pos, state, flags, recursionLeft);
+	}
+
+	@Override
+	public void setBlockEntity(BlockEntity blockEntity)
+	{
+		// A block entity can be installed without any block change at that
+		// position, so the block wipe would never see it.
+		this.fstest$markDirtyBlockEntity(blockEntity.getBlockPos());
+		super.setBlockEntity(blockEntity);
 	}
 
 	@Override

@@ -10,17 +10,22 @@ import fstest.record.RootDispatch;
 import fstest.sim.RegionSnapshot;
 import fstest.analysis.ReplayEngine.RunOutcome;
 import fstest.analysis.ReplayEngine.RunStats;
+import fstest.analysis.ReplayEngine.RunTimings;
 import fstest.sim.SimLevel;
 import fstest.sim.SimServer;
 import fstest.transform.Symmetry;
+import it.unimi.dsi.fastutil.longs.Long2ObjectMap;
+import it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.level.BlockEventData;
+import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.entity.BlockEntity;
+import net.minecraft.world.level.chunk.LevelChunk;
 import net.minecraft.world.level.material.Fluid;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.ticks.ScheduledTick;
@@ -91,9 +96,10 @@ public final class TimedReplayEngine
 		long promoteNanos = simServer.forceAndPump(level, simMin, simMax);
 		BlockPos clearMin = level.fstest$lastClearedMin();
 		BlockPos clearMax = level.fstest$lastClearedMax();
+		long clearNanos = 0L;
 		if (clearMin != null)
 		{
-			level.fstest$clearBox(clearMin, clearMax);
+			clearNanos = level.fstest$clearBox();
 			if (!sameBox(clearMin, clearMax, simMin, simMax))
 			{
 				// A distant P/PD box has no reason to stay loaded once it is
@@ -108,14 +114,32 @@ public final class TimedReplayEngine
 		// Environment: clock, gamerules, random (no recording session yet, so
 		// copying pre-existing state emits no creation events)
 		// ------------------------------------------------------------------
+		long copyInStart = System.nanoTime();
 		level.fstest$setSimClock(snap.gameTime, snap.dayTime);
 		simServer.getWorldData().getGameRules().setAll(real.getGameRules(), simServer);
 		level.random.setSeed(snap.seedKnown ? snap.realRandomSeed : 0x9E3779B97F4A7C15L);
 
+		// Arm the wipe bookkeeping before the copy: the copy is itself a write,
+		// and it must be attributed to this run so the next wipe reverts it.
+		level.fstest$beginTracking();
+		// resolve each chunk once instead of twice per copied block
+		// (Level#getChunkAt + Level#getBlockState inside Level#setBlock)
+		Long2ObjectMap<LevelChunk> copiedChunks = new Long2ObjectOpenHashMap<>();
 		for (Map.Entry<BlockPos, BlockState> entry : snap.states.entrySet())
 		{
 			BlockPos pos = ReplayEngine.mapRelPos(snap.anchor, offset, symmetry, entry.getKey());
-			level.setBlock(pos, symmetry.applyToState(entry.getValue()), SimLevel.RAW_FLAGS, 0);
+			long chunkKey = ChunkPos.asLong(pos);
+			LevelChunk chunk = copiedChunks.get(chunkKey);
+			if (chunk == null)
+			{
+				chunk = level.fstest$chunkForWrite(pos);
+				if (chunk == null)
+				{
+					continue; // outside the promoted box: nothing to write into
+				}
+				copiedChunks.put(chunkKey, chunk);
+			}
+			level.fstest$storeState(chunk, pos, symmetry.applyToState(entry.getValue()));
 		}
 		for (Map.Entry<BlockPos, CompoundTag> entry : snap.blockEntities.entrySet())
 		{
@@ -147,6 +171,7 @@ public final class TimedReplayEngine
 					event.block(), event.paramA(), event.paramB()));
 		}
 		level.fstest$rememberClearedBox(simMin, simMax);
+		long copyInNanos = System.nanoTime() - copyInStart;
 
 		// ------------------------------------------------------------------
 		// Recording session (same machinery as the instant engine)
@@ -154,6 +179,7 @@ public final class TimedReplayEngine
 		CaptureSession session = RecorderHub.push(level);
 		try
 		{
+			long replayStart = System.nanoTime();
 			Map<BlockPos, Markers.Subscription> remapped = new HashMap<>();
 			for (Map.Entry<BlockPos, Markers.Subscription> entry : realSession.getMarkerCacheView().entrySet())
 			{
@@ -215,26 +241,38 @@ public final class TimedReplayEngine
 			}
 
 			int preTickEvents = session.events.size();
+			long replayNanos = System.nanoTime() - replayStart;
+			long simTicksStart = System.nanoTime();
 			List<Integer> boundaries = simTicks > 0
 					? level.fstest$runSimTicks(simTicks, session.events::size)
 					: List.of();
+			long simTicksNanos = System.nanoTime() - simTicksStart;
+			String dirtyMark = level.fstest$endTracking();
 
 			// mismatch positions are reported in real coordinates; the timed
 			// engine has no captured side-effect replay, so none are produced
 			ReplayEngine.SimPhaseStats simPhase = simTicks > 0
 					? new ReplayEngine.SimPhaseStats(boundaries.size(), 0, 0, 0, 0, List.of())
 					: ReplayEngine.SimPhaseStats.NONE;
+			RunTimings timings = new RunTimings(promoteNanos, clearNanos, copyInNanos,
+					replayNanos, simTicksNanos);
 			RunStats stats = new RunStats(rootsApplied, realSession.rootChanges.size(),
 					level.fstest$setBlockCalls(), level.fstest$neighborUpdateDispatches(),
 					session.createdBlockEvents.size(), session.createdTicks.size(), session.events.size(),
-					List.of(), System.nanoTime() - startNanos, preTickEvents, List.copyOf(boundaries), simPhase);
+					List.of(), System.nanoTime() - startNanos, preTickEvents, List.copyOf(boundaries), simPhase,
+					timings);
 			// one line per run: makes a degrading batch visible in the log
-			// instead of only felt as a stutter
-			fstest.FstestMod.LOGGER.info("[fstest] timed run {} took {} ms (promote {} ms, release {} ms, "
-							+ "{} sim ticks, {} events, {} chunks held)",
+			// instead of only felt as a stutter. Every phase the run goes
+			// through is named - an unnamed phase is an unattributable one.
+			fstest.FstestMod.LOGGER.info("[fstest] timed run {} took {} ms "
+							+ "(promote {} ms, clear {} ms, copyIn {} ms, replay {} ms, simTicks {} ms, "
+							+ "release {} ms; {} sim ticks, {} events, {} dirty sections/blockEntities, "
+							+ "{} chunks held)",
 					label, (System.nanoTime() - startNanos) / 1_000_000L, promoteNanos / 1_000_000L,
+					clearNanos / 1_000_000L, copyInNanos / 1_000_000L, replayNanos / 1_000_000L,
+					simTicksNanos / 1_000_000L,
 					simServer.fstest$lastReleaseNanos() / 1_000_000L, simTicks,
-					stats.rawEvents(), level.fstest$heldChunkCount());
+					stats.rawEvents(), dirtyMark, level.fstest$heldChunkCount());
 			return new RunOutcome(label,
 					ReplayEngine.canonicalize(session.events, snap.anchor, offset, symmetry), stats, offset);
 		}

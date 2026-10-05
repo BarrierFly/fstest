@@ -34,6 +34,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
+import org.jspecify.annotations.Nullable;
+
 /**
  * Builds a simulated space from a {@link RegionSnapshot} under one transform,
  * replays the captured root actions of the operation, backfills handler-side
@@ -53,12 +55,23 @@ public final class ReplayEngine
 				new SimPhaseStats(0, 0, 0, 0, 0, List.of());
 	}
 
+	/**
+	 * Wall-clock split of a timed run, in nanoseconds. Absent in instant mode,
+	 * whose whole cost is the replay itself (already in
+	 * {@link RunStats#runNanos()}).
+	 */
+	public record RunTimings(long promoteNanos, long clearNanos, long copyInNanos, long replayNanos,
+	                         long simTicksNanos)
+	{
+		public static final RunTimings NONE = new RunTimings(0, 0, 0, 0, 0);
+	}
+
 	/** Replay diagnostics for one run, surfaced in the simulation log header. */
 	public record RunStats(int rootsApplied, int rootsTotal, long setBlockCalls, long neighborUpdateDispatches,
 	                       int createdBlockEvents, int createdTicks, int rawEvents,
 	                       List<BlockPos> sideEffectContextMismatches,
 	                       long runNanos, int preTickEvents, List<Integer> tickBoundaries,
-	                       SimPhaseStats simPhase)
+	                       SimPhaseStats simPhase, @Nullable RunTimings timings)
 	{
 	}
 
@@ -173,7 +186,8 @@ public final class ReplayEngine
 					world.setBlockCalls(), world.neighborUpdateDispatches(),
 					session.createdBlockEvents.size(), session.createdTicks.size(), session.events.size(),
 					sideEffectMismatches,
-					System.nanoTime() - startNanos, preTickEvents, List.of(), ReplayEngine.SimPhaseStats.NONE);
+					System.nanoTime() - startNanos, preTickEvents, List.of(), ReplayEngine.SimPhaseStats.NONE,
+					RunTimings.NONE);
 			// Simulated events live in simulation space (transformed positions,
 			// directions and states); map them back onto real coordinates so every
 			// run can be diffed against the real stream directly.

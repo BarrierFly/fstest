@@ -57,10 +57,19 @@ public final class SimulationLog
 	 * @param mtrMode    whether the runs executed simulated game ticks (MTR mode);
 	 *                   the comparison reference is then the baseline run, not reality
 	 * @param totalNanos wall-clock duration of the whole analysis (runs + report)
+	 * @param reportNanos wall-clock duration of the diff/aggregation pass, which
+	 *                    is the part of the analysis that scales with run count
+	 *                    times stream length
+	 * @param baselineDiff the already-computed reality-vs-baseline diff, reused
+	 *                     instead of diffing the same two streams again
+	 * @param agg the already-computed aggregation, with one {@code Diff} per
+	 *            entry of {@code runs}
 	 */
 	public static void write(ServerLevel level, @Nullable ServerPlayer player, TriggerCapture.OpKind kind,
 	                         BlockPos anchor, CaptureSession realSession, FstestConfig cfg, String snapshotSource,
-	                         @Nullable RunOutcome baseline, List<RunOutcome> runs, boolean mtrMode, long totalNanos)
+	                         @Nullable RunOutcome baseline, DiffEngine.Diff baselineDiff,
+	                         List<RunOutcome> runs, ReportFormatter.Aggregation agg,
+	                         boolean mtrMode, long totalNanos, long reportNanos)
 	{
 		Path file;
 		try
@@ -82,8 +91,8 @@ public final class SimulationLog
 		try (BufferedWriter w = Files.newBufferedWriter(file, StandardCharsets.UTF_8,
 				StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE))
 		{
-			writeHeader(w, level, player, kind, anchor, cfg, realSession, snapshotSource, baseline, runs,
-					mtrMode, totalNanos);
+			writeHeader(w, level, player, kind, anchor, cfg, realSession, snapshotSource, baseline,
+					baselineDiff, runs, mtrMode, totalNanos, reportNanos);
 			writeEvents(w, mtrMode ? "REAL (instant window)" : "REAL", realSession.events);
 			if (baseline != null)
 			{
@@ -95,19 +104,16 @@ public final class SimulationLog
 				{
 					writeEvents(w, "BASELINE (identity, 0° no mirror)", baseline.events());
 				}
-				writeDiff(w, mtrMode ? "BASELINE (instant part) vs REAL" : "BASELINE vs REAL",
-						realSession.events,
-						mtrMode ? baseline.events().subList(0, baseline.stats().preTickEvents()) : baseline.events());
+				writeDiff(w, mtrMode ? "BASELINE (instant part) vs REAL" : "BASELINE vs REAL", baselineDiff);
 			}
-			for (ReplayEngine.RunOutcome run : runs)
+			for (int i = 0; i < runs.size(); i++)
 			{
+				ReplayEngine.RunOutcome run = runs.get(i);
 				writeEvents(w, "RUN: " + run.label(), run.events());
 				writeRunStats(w, run);
 				writeDiff(w, mtrMode ? "RUN " + run.label() + " vs BASELINE" : "RUN " + run.label() + " vs REAL",
-						mtrMode && baseline != null ? baseline.events() : realSession.events, run.events());
+						agg.perRun().get(i));
 			}
-			ReportFormatter.Aggregation agg = ReportFormatter.aggregate(
-					mtrMode && baseline != null ? baseline.events() : realSession.events, runs);
 			writeSummary(w, agg);
 			w.flush();
 		}
@@ -157,8 +163,9 @@ public final class SimulationLog
 	private static void writeHeader(BufferedWriter w, ServerLevel level, @Nullable ServerPlayer player,
 	                                TriggerCapture.OpKind kind, BlockPos anchor, FstestConfig cfg,
 	                                CaptureSession realSession, String snapshotSource,
-	                                @Nullable RunOutcome baseline,
-	                                List<RunOutcome> runs, boolean mtrMode, long totalNanos) throws IOException
+	                                @Nullable RunOutcome baseline, DiffEngine.Diff baselineDiff,
+	                                List<RunOutcome> runs, boolean mtrMode, long totalNanos,
+	                                long reportNanos) throws IOException
 	{
 		String ts = LocalDateTime.now().format(DateTimeFormatter.ISO_LOCAL_DATE_TIME);
 		w.write("=== Fengshui Tester simulation log ==="); w.newLine();
@@ -196,11 +203,11 @@ public final class SimulationLog
 					+ ", eventAttempts " + baseline.stats().createdBlockEvents()
 					+ ", tickAttempts " + baseline.stats().createdTicks()
 					+ ", rawEvents " + baseline.stats().rawEvents()); w.newLine();
-			DiffEngine.Diff baselineDiff = DiffEngine.diff(realSession.events,
-					mtrMode ? baseline.events().subList(0, baseline.stats().preTickEvents()) : baseline.events());
 			w.write("baseline match   : " + (baselineDiff.isEmpty() ? "OK" : "DISTORTION (see BASELINE vs REAL)")); w.newLine();
 		}
 		w.write("simulations      : " + runs.size()); w.newLine();
+		w.write("report time      : " + formatMillis(reportNanos) + " (diff + aggregation of "
+				+ runs.size() + " run(s))"); w.newLine();
 		w.write("analysis time    : " + formatMillis(totalNanos)); w.newLine();
 		w.newLine();
 	}
@@ -320,6 +327,18 @@ public final class SimulationLog
 				}
 			}
 		}
+		// where this run's wall clock went, phase by phase: an unnamed phase is
+		// an unattributable one
+		ReplayEngine.RunTimings t = s.timings();
+		if (t != null && t != ReplayEngine.RunTimings.NONE)
+		{
+			line.append(", phases[promote ").append(formatMillis(t.promoteNanos()))
+					.append(", clear ").append(formatMillis(t.clearNanos()))
+					.append(", copyIn ").append(formatMillis(t.copyInNanos()))
+					.append(", replay ").append(formatMillis(t.replayNanos()))
+					.append(", simTicks ").append(formatMillis(t.simTicksNanos()))
+					.append(']');
+		}
 		w.write(line.toString());
 		w.newLine();
 	}
@@ -338,9 +357,8 @@ public final class SimulationLog
 		}
 	}
 
-	private static void writeDiff(BufferedWriter w, String sectionTitle, List<FstEvent> real, List<FstEvent> sim) throws IOException
+	private static void writeDiff(BufferedWriter w, String sectionTitle, DiffEngine.Diff diff) throws IOException
 	{
-		DiffEngine.Diff diff = DiffEngine.diff(real, sim);
 		if (diff.isEmpty())
 		{
 			w.write("--- " + sectionTitle + " (matches reference exactly) ---");

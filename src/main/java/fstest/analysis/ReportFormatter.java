@@ -29,7 +29,19 @@ public final class ReportFormatter
 	{
 	}
 
-	public record Aggregation(Map<String, OutcomeAgg> outcomes, int identical, int total)
+	/**
+	 * Group the runs by distinct diff against the reference. The per-run diffs
+	 * are returned alongside the aggregation so the file writer can reuse them
+	 * instead of diffing every run a second time.
+	 *
+	 * <p>The reference's comparison keys are built once for the whole batch, and
+	 * a run is matched against the known outcomes by
+	 * {@link DiffEngine.Diff#sameOutcome} - the same criterion {@code key()}
+	 * encodes, minus the sorted-and-joined string it would cost to build once
+	 * per run just to learn "already seen".
+	 */
+	public record Aggregation(Map<String, OutcomeAgg> outcomes, int identical, int total,
+	                          List<DiffEngine.Diff> perRun)
 	{
 	}
 
@@ -39,33 +51,54 @@ public final class ReportFormatter
 
 	public static Aggregation aggregate(List<FstEvent> realEvents, List<ReplayEngine.RunOutcome> runs)
 	{
+		String[] referenceKeys = DiffEngine.keys(realEvents);
 		Map<String, OutcomeAgg> outcomes = new LinkedHashMap<>();
+		List<DiffEngine.Diff> perRun = new ArrayList<>(runs.size());
 		int identical = 0;
 		for (ReplayEngine.RunOutcome run : runs)
 		{
-			DiffEngine.Diff diff = DiffEngine.diff(realEvents, run.events());
+			DiffEngine.Diff diff = DiffEngine.diff(referenceKeys, DiffEngine.keys(run.events()));
+			perRun.add(diff);
 			if (diff.isEmpty())
 			{
 				identical++;
 				continue;
 			}
-			String key = diff.key();
-			OutcomeAgg existing = outcomes.get(key);
-			if (existing == null)
+			String key = keyOfExistingOutcome(outcomes, diff);
+			if (key == null)
 			{
+				key = diff.key();
 				outcomes.put(key, new OutcomeAgg(1, new ArrayList<>(List.of(run.label())), diff));
+				continue;
 			}
-			else if (existing.labels().size() < MAX_LABELS_PER_OUTCOME)
+			OutcomeAgg existing = outcomes.get(key);
+			List<String> labels = existing.labels();
+			if (labels.size() < MAX_LABELS_PER_OUTCOME)
 			{
-				existing.labels().add(run.label());
-				outcomes.put(key, new OutcomeAgg(existing.count() + 1, existing.labels(), existing.sample()));
+				labels = new ArrayList<>(labels);
+				labels.add(run.label());
 			}
-			else
+			outcomes.put(key, new OutcomeAgg(existing.count() + 1, labels, existing.sample()));
+		}
+		return new Aggregation(outcomes, identical, runs.size(), List.copyOf(perRun));
+	}
+
+	/**
+	 * The key of the already-recorded outcome whose sample diff has the same
+	 * content, or null for a genuinely new outcome. There are only ever a
+	 * handful of distinct outcomes, so comparing them is far cheaper than
+	 * rebuilding each diff's sorted-and-joined key.
+	 */
+	private static @Nullable String keyOfExistingOutcome(Map<String, OutcomeAgg> outcomes, DiffEngine.Diff diff)
+	{
+		for (Map.Entry<String, OutcomeAgg> entry : outcomes.entrySet())
+		{
+			if (entry.getValue().sample().sameOutcome(diff))
 			{
-				outcomes.put(key, new OutcomeAgg(existing.count() + 1, existing.labels(), existing.sample()));
+				return entry.getKey();
 			}
 		}
-		return new Aggregation(outcomes, identical, runs.size());
+		return null;
 	}
 
 	static void message(@Nullable ServerPlayer player, String key)
@@ -120,14 +153,14 @@ public final class ReportFormatter
 	}
 
 	static void report(@Nullable ServerPlayer player, TriggerCapture.OpKind kind,
-	                   List<FstEvent> referenceEvents, List<ReplayEngine.RunOutcome> runs, boolean mtrMode)
+	                   int referenceEventCount, List<ReplayEngine.RunOutcome> runs,
+	                   Aggregation agg, boolean mtrMode)
 	{
-		Aggregation agg = aggregate(referenceEvents, runs);
 		List<Component> lines = new ArrayList<>();
 		lines.add(Component.translatable(mtrMode ? "fstest.report.header.timed" : "fstest.report.header")
 				.withStyle(ChatFormatting.GOLD));
 		lines.add(Component.translatable(mtrMode ? "fstest.report.runs.timed" : "fstest.report.runs",
-				runs.size(), agg.identical(), referenceEvents.size()).withStyle(ChatFormatting.GRAY));
+				runs.size(), agg.identical(), referenceEventCount).withStyle(ChatFormatting.GRAY));
 
 		List<OutcomeAgg> sorted = new ArrayList<>(agg.outcomes().values());
 		sorted.sort(Comparator.comparingInt(OutcomeAgg::count).reversed());

@@ -141,16 +141,19 @@ public final class FstestAnalysis
 					: ReplayEngine.run(level, server, snapshot,
 							Symmetry.IDENTITY, BlockPos.ZERO, "baseline", realSession);
 			progress.tick();
+			DiffEngine.Diff baselineDiff = DiffEngine.EMPTY;
 			if (!realSession.events.isEmpty())
 			{
 				List<FstEvent> baselineInstant = timed
 						? baseline.events().subList(0, baseline.stats().preTickEvents())
 						: baseline.events();
-				DiffEngine.Diff baselineDiff = DiffEngine.diff(realSession.events, baselineInstant);
+				baselineDiff = DiffEngine.diff(realSession.events, baselineInstant);
 				if (!baselineDiff.isEmpty())
 				{
 					fstest.record.SimulationLog.write(level, player, kind, anchor, realSession, cfg, snapshotSource,
-							baseline, List.of(), timed, System.nanoTime() - analysisStart);
+							baseline, baselineDiff, List.of(),
+							ReportFormatter.aggregate(baselineInstant, List.of()),
+							timed, System.nanoTime() - analysisStart, 0L);
 					ReportFormatter.reportDistortion(player, baselineDiff);
 					return;
 				}
@@ -214,9 +217,15 @@ public final class FstestAnalysis
 			// multi-tick stream (reality has no recording beyond the instant
 			// window); in instant mode it is the real recording itself.
 			List<FstEvent> reference = timed ? baseline.events() : realSession.events;
-			ReportFormatter.report(player, kind, reference, runs, timed);
+			// One diff per run, computed once and handed to both the chat
+			// report and the file writer: the LCS walk is O(stream^2) and used
+			// to run three times over every run.
+			long reportStart = System.nanoTime();
+			ReportFormatter.Aggregation agg = ReportFormatter.aggregate(reference, runs);
+			long reportNanos = System.nanoTime() - reportStart;
+			ReportFormatter.report(player, kind, reference.size(), runs, agg, timed);
 			fstest.record.SimulationLog.write(level, player, kind, anchor, realSession, cfg, snapshotSource,
-					baseline, runs, timed, System.nanoTime() - analysisStart);
+					baseline, baselineDiff, runs, agg, timed, System.nanoTime() - analysisStart, reportNanos);
 		}
 		finally
 		{
