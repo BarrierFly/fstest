@@ -148,6 +148,11 @@ For directionality testing, any non-empty diff means the contraption is **not** 
 - "No monitor subscribed under the selected wool colour near the operation; place wool next to your redstone components or register a /fstest targets marker." → the colour filter excludes your wool/target (`/fstest color all` or match the colour); or there is no wool in the component's subscription position (see the table) and no `/fstest targets` marker on the component; or it is outside the snapshot radius (raise `/fstest range`, but keep it as small as the device allows — see [Snapshot radius and performance](#snapshot-radius-and-performance-read-this-first)). If you registered targets, run `/fstest targets query`: a target annotated "(excluded by the current color filter)" is being filtered out.
 - "Simulator distortion detected! ... baseline differences ..." → your contraption uses something the v1 simulator does not cover (light-sensitive components, entities, explosions, piston move-shape effects on rails/fences, etc.). The per-file log under `fstest-logs/` will show which `+`/`-` lines the baseline disagrees on — that is the first thing to fix.
 
+## 0.4.1 changes
+
+**Fixed**
+- **Timed mode triggered on operations outside the scoped area.** The 0.4.0 scope gate only ran for operations that carry a hit position. The client falls back to an in-air item use whenever the server answers the block interaction with `PASS`, and that path has no hit position — so it skipped the gate entirely. Filling water on a stair is the common case: a stair is neither water-replaceable nor a liquid container, so the bucket asks for the block next to the clicked face, and when that one is blocked too the whole interaction returns `PASS`, the client re-sends the click as a plain item use, and the bucket then places water wherever it likes and triggers a simulation. The gate now judges the position the operation is anchored at (the clicked block, or the player for an in-air use), so every entry point is covered. Operations outside the selection are ignored again, as documented. Note that a player standing *inside* the selection who places a block *outside* it still triggers — the gate judges the operation, not the resulting block.
+
 ## 0.4.0 changes
 
 **Added**
@@ -329,6 +334,11 @@ LGPL-3.0-only. The collection layer re-implements concepts from [Carpet TIS Addi
 
 - "No monitor subscribed under the selected wool colour near the operation; place wool next to your redstone components or register a /fstest targets marker." → 颜色筛选器把羊毛/目标过滤掉了（`/fstest color all` 或换成对应色）；或组件订阅位置没放羊毛（见上表）、组件上也没注册 target；或在快照半径之外（调大 `/fstest range`，但保持装置所需的最小值——见[快照半径与性能](#快照半径与性能先看这里)）。若已注册目标，执行 `/fstest targets query`：被标注"（被当前颜色筛选排除）"的就是被筛掉的。
 - "Simulator distortion detected! ... baseline differences ..." → 装置里有 v1 模拟器没覆盖到的东西（光敏元件、依赖实体的部分、爆炸、铁轨/栅栏的活塞搬移形状等）。看 `fstest-logs/` 里对应文件，基线 diff 行就是排查起点。
+
+## 0.4.1 变更
+
+**修复**
+- **定时模式会因选区外的操作而触发**。0.4.0 的选区门禁只对「带命中位置」的操作生效。客户端在服务端对某次方块交互返回 `PASS` 时，会兜底改发一次「空中使用物品」，而这条路径没有命中位置，于是整个绕过了门禁。给台阶充水就是最常见的触发方式：楼梯既不能被水替换、也不是液体容器，水桶于是去问被点击面的相邻方块，若那个格子也被挡住，整次交互就返回 `PASS`，客户端把这次点击改发成普通使用物品，水桶随即在任何位置放下水并触发模拟。现在门禁改为判定操作所锚定的位置（点到的方块；空中使用则取玩家自身位置），所有入口都被覆盖，选区外的操作重新被忽略，与文档一致。仍需注意：玩家**站在**选区内、但把方块放在选区**之外**时依然会触发——门禁判定的是这次操作，而不是它最终落下的方块。
 
 ## 0.4.0 变更
 

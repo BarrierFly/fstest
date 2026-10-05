@@ -83,7 +83,18 @@ public final class TriggerCapture
 		{
 			return;
 		}
-		if (anchor != null && !inTimedScope(anchor))
+		// Resolved before the scope gate: the gate has to judge the position the
+		// operation is anchored at, not the raw `anchor` argument. `useItem` has
+		// no hit result and passes a null anchor, so gating on `anchor != null`
+		// left that whole path unchecked - and the client falls back to it for
+		// any block interaction the server answers with PASS (e.g. a bucket on a
+		// stair whose clicked face cannot take water), which then placed water
+		// anywhere in the world and triggered timed mode from outside the
+		// selection.
+		BlockPos pos = anchor != null ? anchor.immutable()
+				: player != null ? player.blockPosition().immutable()
+				: BlockPos.ZERO;
+		if (!inTimedScope(pos))
 		{
 			// timed mode only ever simulates the selected area: an operation
 			// anywhere else in the world has nothing to do with it, and letting
@@ -104,9 +115,6 @@ public final class TriggerCapture
 			ACTIVE.remove();
 		}
 		RecorderHub.resetDepth(); // guard against depth leaked by exception paths in setBlock
-		BlockPos pos = anchor != null ? anchor.immutable()
-				: player != null ? player.blockPosition().immutable()
-				: BlockPos.ZERO;
 		CaptureSession session = RecorderHub.push(world);
 		ActiveOp op = new ActiveOp(kind, pos, session, player);
 		RecorderHub.setFirstRootAction(() -> op.snapshot = capturePreOpSnapshot(serverLevel, pos));
@@ -115,19 +123,23 @@ public final class TriggerCapture
 
 	/**
 	 * The timed-mode scope gate: with a named area selected, only operations
-	 * targeting a block inside it may start a capture. Instant mode and timed
-	 * mode without a selection keep the old behaviour (every accepted operation
+	 * anchored inside it may start a capture. Instant mode and timed mode
+	 * without a selection keep the old behaviour (every accepted operation
 	 * anywhere triggers), because there the region is derived from the anchor
- * *after* the fact.
+	 * *after* the fact.
+	 *
+	 * <p>Callers pass the already-resolved operation position, never a nullable
+	 * anchor: {@link OpKind#USE_ITEM} carries no hit result, and letting a null
+	 * through here would exempt it from the selection entirely.
 	 */
-	private static boolean inTimedScope(BlockPos anchor)
+	private static boolean inTimedScope(BlockPos pos)
 	{
 		if (!FstestConfig.INSTANCE.isTimed())
 		{
 			return true;
 		}
 		FstestConfig.Area area = FstestConfig.INSTANCE.scopedArea().orElse(null);
-		return area == null || area.contains(anchor);
+		return area == null || area.contains(pos);
 	}
 
 	/**
