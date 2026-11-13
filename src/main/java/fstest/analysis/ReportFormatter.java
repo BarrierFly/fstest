@@ -196,7 +196,8 @@ public final class ReportFormatter
 	 * Appends the sample diff lines grouped by monitored position (the spec's
 	 * "grouped by marker block" output): a gray position header followed by the
 	 * +/- events recorded at that position. The overall line budget is
-	 * unchanged; overflow is reported as "(+N more)".
+	 * unchanged; overflow is reported as "(+N more)", counted against the
+	 * diff's total event count so group-loop early exits cannot underreport.
 	 */
 	private static void appendOps(List<Component> lines, DiffEngine.Diff diff)
 	{
@@ -215,8 +216,8 @@ public final class ReportFormatter
 					.add(Component.literal("- ").withStyle(ChatFormatting.RED)
 							.append(Component.literal(minus).withStyle(ChatFormatting.WHITE)));
 		}
+		int total = diff.plus().size() + diff.minus().size();
 		int displayed = 0;
-		int entries = 0;
 		for (Map.Entry<String, List<Component>> entry : byPosition.entrySet())
 		{
 			if (displayed >= limit)
@@ -236,9 +237,8 @@ public final class ReportFormatter
 				lines.add(line);
 				displayed++;
 			}
-			entries += entry.getValue().size();
 		}
-		int remaining = entries - displayed;
+		int remaining = total - displayed;
 		if (remaining > 0)
 		{
 			lines.add(Component.translatable("fstest.report.more", remaining).withStyle(ChatFormatting.DARK_GRAY));

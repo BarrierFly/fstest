@@ -44,7 +44,7 @@
     "fstest.targets.query.entry": "%s = %s",
     "fstest.targets.query.filtered": "  （被当前颜色筛选排除）",
     "fstest.targets.query.empty": "尚未注册目标；可用 /fstest targets add <颜色> <x> <y> <z> 添加。",
-    "fstest.usage": "用法：/fstest <mode|color|count|range|pstrategy|updates|duplications|mtr|mtrarea|targets|query>",
+    "fstest.usage": "用法：/fstest <mode|color|count|scope|pstrategy|updates|duplications|sim|simticks|mtrarea|targets|query>",
     "fstest.query.header": "--- 风水测试器配置 ---",
     "fstest.query.mode": "模式",
     "fstest.query.color": "颜色",

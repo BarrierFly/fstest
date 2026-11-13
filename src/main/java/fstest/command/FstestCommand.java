@@ -110,10 +110,12 @@ public final class FstestCommand
 								.executes(ctx -> setSimTicks(ctx, IntegerArgumentType.getInteger(ctx, "ticks")))))
 				.then(Commands.literal("scope")
 						.executes(ctx -> usage(ctx, "fstest.scope.usage"))
-						.then(Commands.argument("value", StringArgumentType.word())
-								.suggests((ctx, builder) -> SharedSuggestionProvider.suggest(
-										scopeSuggestions(), builder))
-								.executes(ctx -> setScope(ctx, StringArgumentType.getString(ctx, "value")))))
+						.then(scopeArgument()))
+				// deprecated alias: /fstest range <value> behaves exactly like
+				// /fstest scope <value> (same suggestions, usage and messages)
+				.then(Commands.literal("range")
+						.executes(ctx -> usage(ctx, "fstest.scope.usage"))
+						.then(scopeArgument()))
 				.then(Commands.literal("mtrarea")
 						.executes(ctx -> usage(ctx, "fstest.mtrarea.usage"))
 						.then(Commands.literal("add")
@@ -158,9 +160,16 @@ public final class FstestCommand
 						.then(Commands.literal("query").executes(FstestCommand::targetsQuery)))
 				.then(Commands.literal("query").executes(FstestCommand::query));
 
-		com.mojang.brigadier.tree.CommandNode<CommandSourceStack> rootNode = dispatcher.register(root);
-		// deprecated alias: /fstest range behaves exactly like /fstest scope
-		dispatcher.register(Commands.literal("range").redirect(rootNode));
+		dispatcher.register(root);
+	}
+
+	/** The shared value argument of {@code /fstest scope} and its deprecated {@code range} alias. */
+	private static com.mojang.brigadier.builder.RequiredArgumentBuilder<CommandSourceStack, String> scopeArgument()
+	{
+		return Commands.argument("value", StringArgumentType.word())
+				.suggests((ctx, builder) -> SharedSuggestionProvider.suggest(
+						scopeSuggestions(), builder))
+				.executes(ctx -> setScope(ctx, StringArgumentType.getString(ctx, "value")));
 	}
 
 	private static com.mojang.brigadier.builder.RequiredArgumentBuilder<CommandSourceStack, String> toggleArgument()
@@ -321,19 +330,17 @@ public final class FstestCommand
 		String normalized = value.trim().toLowerCase(Locale.ROOT);
 		if (normalized.equals("unlimited"))
 		{
-			FstestConfig.INSTANCE.setRange(-1);
-			FstestConfig.INSTANCE.setScopeArea(null);
+			FstestConfig.INSTANCE.setRadiusScope(-1);
 			return ok(ctx, "fstest.scope.set.radius",
 					Component.translatable("fstest.range.unlimited").withStyle(ChatFormatting.YELLOW));
 		}
 		try
 		{
 			int r = Integer.parseInt(normalized);
-			if (!FstestConfig.INSTANCE.setRange(r))
+			if (!FstestConfig.INSTANCE.setRadiusScope(r))
 			{
 				return fail(ctx, "fstest.scope.usage");
 			}
-			FstestConfig.INSTANCE.setScopeArea(null);
 			return ok(ctx, "fstest.scope.set.radius", yellow(String.valueOf(r)));
 		}
 		catch (NumberFormatException e)

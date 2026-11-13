@@ -321,6 +321,10 @@ public final class ReplayEngine
 		SimLevelData data = new SimLevelData(real.getLevelData(), real.getGameRules(), real.enabledFeatures());
 		FstestSimWorld world = new FstestSimWorld(real, server, data, real.dimensionTypeRegistration(), real.dimension());
 		world.setCapturedRandomSeed(snap.realRandomSeed, snap.seedKnown);
+		// the instant window never executes random ticks, but vanilla block code
+		// reached by the replay may still draw from the world's random - seed it
+		// from the captured reality state, like the timed engine does
+		world.reseedRandomFromCapture();
 
 		for (Map.Entry<BlockPos, BlockState> entry : snap.states.entrySet())
 		{

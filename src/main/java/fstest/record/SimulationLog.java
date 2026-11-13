@@ -52,7 +52,9 @@ public final class SimulationLog
 	/**
 	 * Write a single analysis window to disk. The file is closed before this
 	 * method returns; failures are logged and swallowed (writing a log must
-	 * never crash the analysis path).
+	 * never crash the analysis path). The millisecond-stamped name is kept as
+	 * is when free; on a same-millisecond collision a numeric suffix is tried
+	 * instead of dropping the whole report.
 	 *
 	 * @param mtrMode    whether the runs executed simulated game ticks (MTR mode);
 	 *                   the comparison reference is then the baseline run, not reality
@@ -80,7 +82,19 @@ public final class SimulationLog
 			String stamp = LocalDateTime.now().format(STAMP);
 			String name = String.format(Locale.ROOT, "%s_%s_at_%d_%d_%d_%s.txt",
 					stamp, kind, anchor.getX(), anchor.getY(), anchor.getZ(), playerTag);
-			file = dir.resolve(name);
+			Path candidate = dir.resolve(name);
+			int suffix = 1;
+			while (Files.exists(candidate))
+			{
+				candidate = dir.resolve(name.replace(".txt", "_" + suffix++ + ".txt"));
+				if (suffix > 100)
+				{
+					// absurd even for a tight loop; give up rather than spin
+					FstestMod.LOGGER.error("[fstest] could not find a free log file name for {}", name);
+					return;
+				}
+			}
+			file = candidate;
 		}
 		catch (IOException e)
 		{

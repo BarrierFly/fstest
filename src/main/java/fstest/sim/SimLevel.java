@@ -645,7 +645,12 @@ public final class SimLevel extends ServerLevel
 		// suppressed
 	}
 
-	/** Isolation: the simulated world never persists anything. */
+	/**
+	 * Isolation: the simulated world never persists anything. Verified against
+	 * the 1.21.11 source: with {@code skipSave=true} the entire vanilla body -
+	 * level data, chunks and entity autosave alike - sits behind
+	 * {@code if (!skipSave)}, so this override is a true no-op, not a partial save.
+	 */
 	@Override
 	public void save(@Nullable ProgressListener progressListener, boolean flush, boolean skipSave)
 	{

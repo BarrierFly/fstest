@@ -100,6 +100,8 @@ public final class SimServer extends MinecraftServer
 	private static SimServer instance;
 
 	private final LevelStorageSource.LevelStorageAccess storage;
+	/** Held so shutdown can release the loaded datapack resources (its CloseableResourceManager). */
+	private final WorldStem worldStem;
 	private final LocalSampleLogger tickTimeLogger = new LocalSampleLogger(1);
 
 	private SimServer(Thread thread, LevelStorageSource.LevelStorageAccess storage, PackRepository packRepository,
@@ -108,6 +110,7 @@ public final class SimServer extends MinecraftServer
 		super(thread, storage, packRepository, worldStem, Proxy.NO_PROXY, fixerUpper, services,
 				NoopLevelLoadListener.INSTANCE);
 		this.storage = storage;
+		this.worldStem = worldStem;
 	}
 
 	// ------------------------------------------------------------------
@@ -133,11 +136,12 @@ public final class SimServer extends MinecraftServer
 
 		LevelStorageSource.LevelStorageAccess storage =
 				LevelStorageSource.createDefault(root).createAccess(SCRATCH_LEVEL_ID);
-		SimServer server;
+		SimServer server = null;
+		WorldStem worldStem = null;
 		try
 		{
 			PackRepository packRepository = ServerPacksSource.createPackRepository(storage);
-			WorldStem worldStem = loadWorldStem(packRepository, realServer);
+			worldStem = loadWorldStem(packRepository, realServer);
 			Services services = Services.create(new YggdrasilAuthenticationService(Proxy.NO_PROXY), root.toFile());
 
 			server = new SimServer(Thread.currentThread(), storage, packRepository, worldStem, services,
@@ -146,6 +150,23 @@ public final class SimServer extends MinecraftServer
 		}
 		catch (Exception e)
 		{
+			// release everything the failed boot may have created: levels first
+			// (they reference the stem's registries), then the stem's resources,
+			// then the scratch world lock
+			if (server != null)
+			{
+				closeLevels(server);
+			}
+			if (worldStem != null)
+			{
+				try
+				{
+					worldStem.close();
+				}
+				catch (Exception ignored)
+				{
+				}
+			}
 			try
 			{
 				storage.close();
@@ -169,16 +190,14 @@ public final class SimServer extends MinecraftServer
 			return;
 		}
 		instance = null;
-		for (ServerLevel level : server.getAllLevels())
+		closeLevels(server);
+		try
 		{
-			try
-			{
-				level.close();
-			}
-			catch (IOException e)
-			{
-				FstestMod.LOGGER.warn("[fstest] failed to close simulation level {}", level.dimension().identifier(), e);
-			}
+			server.worldStem.close();
+		}
+		catch (Exception e)
+		{
+			FstestMod.LOGGER.warn("[fstest] failed to release the simulation server's datapack resources", e);
 		}
 		try
 		{
@@ -190,6 +209,22 @@ public final class SimServer extends MinecraftServer
 		}
 		deleteRecursively(FabricLoader.getInstance().getGameDir().resolve(SCRATCH_DIR).resolve(SCRATCH_LEVEL_ID));
 		FstestMod.LOGGER.info("[fstest] simulation server stopped");
+	}
+
+	/** Closes every level of the given server, logging individual failures. */
+	private static void closeLevels(SimServer server)
+	{
+		for (ServerLevel level : server.getAllLevels())
+		{
+			try
+			{
+				level.close();
+			}
+			catch (IOException e)
+			{
+				FstestMod.LOGGER.warn("[fstest] failed to close simulation level {}", level.dimension().identifier(), e);
+			}
+		}
 	}
 
 	// ------------------------------------------------------------------

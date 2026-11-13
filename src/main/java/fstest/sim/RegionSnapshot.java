@@ -1,5 +1,6 @@
 package fstest.sim;
 
+import fstest.FstestMod;
 import fstest.config.FstestConfig;
 import fstest.mixin.LevelTicksAccessor;
 import fstest.mixin.ServerLevelBlockEventsAccessor;
@@ -25,6 +26,7 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.OptionalLong;
 
 /**
  * Raw (untransformed, template-space relative) snapshot of the region around
@@ -159,8 +161,20 @@ public final class RegionSnapshot
 		copyBlockEvents(level, snap);
 		snap.hasMonitoredBlock = detectMonitoredBlock(level, snap);
 
-		snap.realRandomSeed = FstestSimWorld.tryCaptureRealRandomSeed(level);
-		snap.seedKnown = true; // best effort; an unreadable seed falls back to a fixed base
+		OptionalLong seed = FstestSimWorld.tryCaptureRealRandomSeed(level);
+		if (seed.isPresent())
+		{
+			snap.realRandomSeed = seed.getAsLong();
+			snap.seedKnown = true;
+		}
+		else
+		{
+			// replay falls back to a fixed base; say so instead of silently
+			// pretending a zero seed was read from reality
+			snap.realRandomSeed = 0L;
+			snap.seedKnown = false;
+			FstestMod.LOGGER.debug("[fstest] could not read the real world's random seed; replay falls back to a fixed base");
+		}
 		return snap;
 	}
 

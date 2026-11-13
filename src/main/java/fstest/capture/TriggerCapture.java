@@ -167,11 +167,22 @@ public final class TriggerCapture
 
 	public static void endWithInteractionResult(Level world, InteractionResult result)
 	{
+		// The RETURN hooks run on every accepted-or-rejected player operation;
+		// skip the ThreadLocal lookups entirely when no session can be open
+		// (a session exists whenever ACTIVE does, so the gate is equivalent).
+		if (!RecorderHub.isActive())
+		{
+			return;
+		}
 		finish(world, result instanceof InteractionResult.Success);
 	}
 
 	public static void endWithBreakOutcome(Level world)
 	{
+		if (!RecorderHub.isActive())
+		{
+			return;
+		}
 		// destroyAndAck is void; acceptance is decided by comparing the block
 		// state at the anchor before/after the call.
 		ActiveOp op = ACTIVE.get();
@@ -186,6 +197,10 @@ public final class TriggerCapture
 	/** Snapshot helper used by the break hook before vanilla processes the action. */
 	public static void snapshotForBreak(Level world, BlockPos pos)
 	{
+		if (!RecorderHub.isActive())
+		{
+			return;
+		}
 		ActiveOp op = ACTIVE.get();
 		if (op != null && op.session.world == world)
 		{

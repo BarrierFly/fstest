@@ -60,6 +60,19 @@ public final class RecorderHub
 	 */
 	private static final ThreadLocal<Deque<RemovalWindow>> REMOVAL_WINDOWS = ThreadLocal.withInitial(ArrayDeque::new);
 
+	/**
+	 * Global fast gate for the hot-path hooks: true while any capture session is
+	 * open anywhere. The recording mixins read this first (a single volatile
+	 * read) and return immediately when no session can exist, so an idle server
+	 * pays nothing beyond that read on vanilla's hottest paths - no ThreadLocal
+	 * lookups, no map lookups, no allocations.
+	 *
+	 * Sessions live on thread-local stacks, but every push/pop happens on the
+	 * server thread (game-mode logic and the replay engines all run there), so
+	 * mirroring the stack population into one flag tracks it faithfully.
+	 */
+	private static volatile boolean active;
+
 	/** One open removal window: where the hook runs, and what it dispatches. */
 	private static final class RemovalWindow
 	{
@@ -86,6 +99,7 @@ public final class RecorderHub
 	{
 		CaptureSession session = new CaptureSession(world);
 		stack().push(session);
+		active = true;
 		return session;
 	}
 
@@ -95,7 +109,17 @@ public final class RecorderHub
 		if (!st.isEmpty() && st.peek() == session)
 		{
 			st.pop();
+			if (st.isEmpty())
+			{
+				active = false;
+			}
 		}
+	}
+
+	/** Whether any capture session is open; cheap enough for every hot-path hook. */
+	public static boolean isActive()
+	{
+		return active;
 	}
 
 	/** The active session for this exact world instance, or null. */

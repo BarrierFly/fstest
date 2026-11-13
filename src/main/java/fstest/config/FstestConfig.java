@@ -95,7 +95,12 @@ public final class FstestConfig
 		return this.selection;
 	}
 
-	private void publishSelection()
+	/**
+	 * Republishes the immutable selection snapshot. Package-private so the
+	 * persistence layer can publish once after a bulk load, instead of once
+	 * per loaded field.
+	 */
+	void publishSelection()
 	{
 		this.selection = new SelectionSnapshot(Map.copyOf(this.areas), this.scopeArea);
 	}
@@ -141,17 +146,21 @@ public final class FstestConfig
 		};
 	}
 
-	/** Fires the persistence hook after a successful mutation; suppressed while loading. */
+	/**
+	 * Fires the persistence hook after a successful mutation; suppressed while
+	 * loading (both the save-back and the per-field selection copy - the load
+	 * path publishes once at the end, see {@link #publishSelection}).
+	 */
 	private void changed()
 	{
-		this.publishSelection();
 		if (!this.loading)
 		{
+			this.publishSelection();
 			this.changeListener.run();
 		}
 	}
 
-	/** Marks the config as being bulk-loaded from disk (no save-back). */
+	/** Marks the config as being bulk-loaded from disk (no save-back, no publish). */
 	public void setLoading(boolean loading)
 	{
 		this.loading = loading;
@@ -247,6 +256,23 @@ public final class FstestConfig
 			return true;
 		}
 		return false;
+	}
+
+	/**
+	 * Sets the radius scope in one mutation: assigns the radius and clears the
+	 * named-area scope, with a single change notification (one selection copy,
+	 * one config write for the {@code /fstest scope <r>} flow).
+	 */
+	public boolean setRadiusScope(int r)
+	{
+		if (r != -1 && (r <= 0 || r > MAX_RANGE))
+		{
+			return false;
+		}
+		this.range = r;
+		this.scopeArea = null;
+		this.changed();
+		return true;
 	}
 
 	public PStrategy strategy()

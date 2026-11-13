@@ -23,6 +23,13 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
  * Success mirrors TIS's flag: vanilla's per-chunk container deduplicates an
  * attempt for a (type, position) that is already queued, so the attempt is
  * recorded as failed when the container's size did not grow.
+ *
+ * HEAD and RETURN share the {@link RecorderHub#isActive()} gate: HEAD skips
+ * the container-count probe when no session is open, and RETURN (which reads
+ * the value HEAD stored) skips for the same reason, so the stale field can
+ * never be observed. Sessions only open and close at game-mode/analysis
+ * boundaries, never inside {@code schedule}, so the two gates cannot disagree
+ * within one call.
  */
 @Mixin(net.minecraft.world.ticks.LevelTicks.class)
 public abstract class LevelTicksScheduleMixin
@@ -33,12 +40,20 @@ public abstract class LevelTicksScheduleMixin
 	@Inject(method = "schedule", at = @At("HEAD"))
 	private void fstest$beforeSchedule(ScheduledTick<?> tick, CallbackInfo ci)
 	{
+		if (!RecorderHub.isActive())
+		{
+			return;
+		}
 		this.fstest$containerCountBefore = this.fstest$containerCount(tick.pos());
 	}
 
 	@Inject(method = "schedule", at = @At("RETURN"))
 	private void fstest$onSchedule(ScheduledTick<?> tick, CallbackInfo ci)
 	{
+		if (!RecorderHub.isActive())
+		{
+			return;
+		}
 		ServerLevel world = ((WorldBearingLevelTicks) (Object) this).fstest$getOwnerWorld();
 		if (world == null)
 		{

@@ -23,6 +23,9 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
  * Hooked on {@code Level} rather than {@code ServerLevel} so the simulated
  * space (which inherits the implementation) records through the very same
  * path - the two streams stay symmetric by construction.
+ *
+ * The hook returns after one {@link RecorderHub#isActive()} read when no
+ * capture session is open.
  */
 @Mixin(Level.class)
 public abstract class LevelComparatorUpdateMixin
@@ -30,6 +33,10 @@ public abstract class LevelComparatorUpdateMixin
 	@Inject(method = "updateNeighbourForOutputSignal", at = @At("HEAD"))
 	private void fstest$recordComparatorUpdate(BlockPos pos, Block block, CallbackInfo ci)
 	{
+		if (!RecorderHub.isActive())
+		{
+			return;
+		}
 		RecorderHub.onNeighborDispatch((Level) (Object) this, UpdateKind.COMPARATOR_UPDATE,
 				pos, block, null, null, false, true);
 	}

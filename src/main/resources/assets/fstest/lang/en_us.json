@@ -44,7 +44,7 @@
     "fstest.targets.query.entry": "%s = %s",
     "fstest.targets.query.filtered": "  (excluded by the current color filter)",
     "fstest.targets.query.empty": "No targets registered; add one with /fstest targets add <color> <x> <y> <z>.",
-    "fstest.usage": "Usage: /fstest <mode|color|count|range|pstrategy|updates|duplications|mtr|mtrarea|targets|query>",
+    "fstest.usage": "Usage: /fstest <mode|color|count|scope|pstrategy|updates|duplications|sim|simticks|mtrarea|targets|query>",
     "fstest.query.header": "--- Fengshui Tester configuration ---",
     "fstest.query.mode": "mode",
     "fstest.query.color": "color",

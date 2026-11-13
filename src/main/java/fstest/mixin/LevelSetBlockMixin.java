@@ -27,6 +27,11 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
  * That leak is harmless here because every capture window hard-resets the
  * depth at its start (see TriggerCapture#begin / RecorderHub#resetDepth) and
  * exitSetBlock clamps at zero.
+ *
+ * HEAD and RETURN share the {@link RecorderHub#isActive()} gate: with no
+ * capture session open (the common case on an idle server) both hooks return
+ * after one volatile read, keeping enter/exit paired - either both run or
+ * neither does.
  */
 @Mixin(Level.class)
 public abstract class LevelSetBlockMixin
@@ -38,6 +43,10 @@ public abstract class LevelSetBlockMixin
 	private void fstest$setBlockHead(BlockPos pos, BlockState newState, int flags, int recursionLeft,
 	                                 CallbackInfoReturnable<Boolean> cir)
 	{
+		if (!RecorderHub.isActive())
+		{
+			return;
+		}
 		RecorderHub.beforeSetBlock((Level) (Object) this, pos, newState, flags);
 		RecorderHub.enterSetBlock();
 	}
@@ -49,6 +58,10 @@ public abstract class LevelSetBlockMixin
 	private void fstest$setBlockReturn(BlockPos pos, BlockState newState, int flags, int recursionLeft,
 	                                   CallbackInfoReturnable<Boolean> cir)
 	{
+		if (!RecorderHub.isActive())
+		{
+			return;
+		}
 		RecorderHub.exitSetBlock();
 	}
 }

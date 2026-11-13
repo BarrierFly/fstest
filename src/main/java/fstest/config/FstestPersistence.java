@@ -116,6 +116,9 @@ public final class FstestPersistence
 		finally
 		{
 			cfg.setLoading(false);
+			// loading suppressed the per-field selection snapshots; publish once
+			// with the fully loaded state (also when a field threw mid-load)
+			cfg.publishSelection();
 		}
 	}
 

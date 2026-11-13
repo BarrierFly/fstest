@@ -34,7 +34,7 @@ Key properties:
 
 ## Requirements
 
-- Minecraft **1.21.11** (Fabric), fabric-loader ≥ 0.19.3 required (the mod declares that as a hard dependency)
+- Minecraft **1.21.11** (Fabric) on a fabric-loader compatible with it. The mod declares no minimum loader version (`fabricloader: "*"`); 0.19.3 is the version it is built against.
 - [fabric-carpet](https://modrinth.com/mod/carpet) ≥ 1.4.193
 
 ## Commands (`/fstest`, permission level 2)
@@ -53,7 +53,7 @@ Key properties:
 | `/fstest scope <unlimited\|r\|area-name>` | The snapshot/simulation **scope**: a number usable as a radius is treated as the radius (r 1..128, default `unlimited` = effective 48); a name selects a registered test area. `/fstest range` is kept as a deprecated alias. |
 | `/fstest mtrarea add <name> <pos1> <pos2>` | Register a named axis-aligned **test area** (each side ≤ 256 blocks). fstest resolves area names only against its own registry - the MicroTimingReplay mod's profiles are a separate thing entirely. |
 | `/fstest mtrarea remove <name>` / `list` / `clear` | Remove one area / list all (annotating the currently scoped one) / remove all. |
-| *(visualization)* | Registered areas are drawn in world space once per client tick: the scoped one as a green box with a faint fill, the others as grey outlines (skipped when far from the camera). Single-player only — the selection is not replicated to clients of a remote server. The renderer announces itself in the log once per session (`selection overlay renderer active; N area(s)...`), which is the quickest way to tell a missing overlay from a missing one. |
+| *(visualization)* | Registered areas are drawn in world space during the world render pass: the scoped one as a green box with a faint fill, the others as grey outlines (skipped when far from the camera). Single-player only — the selection is not replicated to clients of a remote server. The renderer announces itself in the log once per session (`selection overlay renderer active; N area(s)...`), which is the quickest way to tell a missing overlay from a missing one. |
 | `/fstest targets add <color> <x> <y> <z>` | Mark a block position directly (see below). Re-adding the same position recolours it. |
 | `/fstest targets remove <x> <y> <z>` | Remove one target. |
 | `/fstest targets remove color <color>` | Remove every target of that colour. |
@@ -147,6 +147,27 @@ For directionality testing, any non-empty diff means the contraption is **not** 
 
 - "No monitor subscribed under the selected wool colour near the operation; place wool next to your redstone components or register a /fstest targets marker." → the colour filter excludes your wool/target (`/fstest color all` or match the colour); or there is no wool in the component's subscription position (see the table) and no `/fstest targets` marker on the component; or it is outside the snapshot radius (raise `/fstest range`, but keep it as small as the device allows — see [Snapshot radius and performance](#snapshot-radius-and-performance-read-this-first)). If you registered targets, run `/fstest targets query`: a target annotated "(excluded by the current color filter)" is being filtered out.
 - "Simulator distortion detected! ... baseline differences ..." → your contraption uses something the v1 simulator does not cover (light-sensitive components, entities, explosions, piston move-shape effects on rails/fences, etc.). The per-file log under `fstest-logs/` will show which `+`/`-` lines the baseline disagrees on — that is the first thing to fix.
+
+## 0.4.2 changes
+
+**Performance (idle-server cost)**
+- **Every recording mixin now exits after one volatile read when no capture session is open.** Previously `mode=none` only stopped sessions from being *opened*; the hooks themselves still ran on each call, paying ThreadLocal lookups, map lookups, queue `size()` calls and object allocations on the game's hottest paths (`Level#setBlock`, neighbour dispatches, scheduled-tick/block-event creation, block removal). `RecorderHub` now exposes a global fast gate and all hot-path hooks check it first (entry/exit pairs are gated together, so bookkeeping stays balanced). Idle cost on those paths is now a single flag read.
+
+**Fixed**
+- **`/fstest range` was a broken alias and had spawned a stray top-level `/range` command.** The alias was registered as a new root-level command redirecting to `/fstest` itself, so the documented `/fstest range <unlimited|r>` never parsed and `/range ...` leaked into the command namespace. It is now a real `/fstest range` subcommand that forwards to the scope logic (same argument, suggestions, usage and messages).
+- **Instant-mode replay worlds now seed their random from the captured real random state** (the spec's "seed taken from reality"); previously only timed mode did, and the instant worlds silently used a constant seed.
+- An unreadable real random seed is no longer reported as known: the replay now falls back to the documented fixed base (previously a `0` read failure was mistaken for a real seed) and logs at debug level.
+- The report's "(+N more)" truncation line undercounted the hidden lines whenever multiple groups were cut off; it is now computed from the diff's total event count.
+- The per-operation text log no longer loses the whole report when the millisecond-stamped filename collides — a numeric suffix is tried until the name is free.
+- The simulation server now releases its loaded datapack resources on shutdown, and a failed boot no longer leaks already-created levels or the scratch world lock.
+
+**Removed**
+- The selection overlay no longer draws a second copy during `Minecraft#tick`: that output went into the main render target *before* the frame clears it, so it was never visible — pure wasted work (PoseStack/buffer allocation and batch flushes every client tick). The overlay is drawn only in the world render pass, exactly as before visually.
+
+**Changed (minor)**
+- Config loading publishes the client-side selection snapshot once at the end instead of once per loaded field, and `/fstest scope <radius>` writes the config file once instead of twice.
+- Removed the unused `loom_version`/`parchment_version` gradle properties (the build hardcodes its loom version and uses official Mojang mappings).
+- README: the fabric-loader requirement now matches the metadata (no declared minimum, built against 0.19.3); the overlay description reflects the render-pass drawing.
 
 ## 0.4.1 changes
 
@@ -244,7 +265,7 @@ LGPL-3.0-only. The collection layer re-implements concepts from [Carpet TIS Addi
 | `/fstest scope <unlimited\|r\|选区名>` | 快照/模拟**范围**：能当半径用的数字按半径处理（r 取 1..128，默认 `unlimited` = 实际 48）；名字则选取已注册的测试选区。`/fstest range` 保留为弃用别名。 |
 | `/fstest mtrarea add <名称> <坐标1> <坐标2>` | 注册一个命名的长方体**测试选区**（每条边 ≤ 256 格）。fstest 只在**自己的**选区注册表里解析名字——MicroTimingReplay mod 的 profile 选区是完全独立的东西，互不读取。 |
 | `/fstest mtrarea remove <名称>` / `list` / `clear` | 移除一个选区 / 列出全部（标注当前范围内者）/ 清空。 |
-| *（可视化）* | 已注册的选区每个客户端刻画一次：当前范围内的那个是绿色线框加淡填充，其余是灰色线框（离镜头太远的会跳过）。仅在单人游戏内生效（远程服务器不会把选区同步给客户端）。渲染器每局会在日志里自报一次（`selection overlay renderer active; N area(s)...`），用来最快区分「没渲染出来」和「数据没有」。 |
+| *（可视化）* | 已注册的选区在世界渲染阶段画进世界：当前范围内的那个是绿色线框加淡填充，其余是灰色线框（离镜头太远的会跳过）。仅在单人游戏内生效（远程服务器不会把选区同步给客户端）。渲染器每局会在日志里自报一次（`selection overlay renderer active; N area(s)...`），用来最快区分「没渲染出来」和「数据没有」。 |
 | `/fstest targets add <颜色> <x> <y> <z>` | 直接标记一个方块位置（见下）。对同一位置重复执行会改色。 |
 | `/fstest targets remove <x> <y> <z>` | 移除单个目标。 |
 | `/fstest targets remove color <颜色>` | 移除该颜色的全部目标。 |
@@ -334,6 +355,27 @@ LGPL-3.0-only. The collection layer re-implements concepts from [Carpet TIS Addi
 
 - "No monitor subscribed under the selected wool colour near the operation; place wool next to your redstone components or register a /fstest targets marker." → 颜色筛选器把羊毛/目标过滤掉了（`/fstest color all` 或换成对应色）；或组件订阅位置没放羊毛（见上表）、组件上也没注册 target；或在快照半径之外（调大 `/fstest range`，但保持装置所需的最小值——见[快照半径与性能](#快照半径与性能先看这里)）。若已注册目标，执行 `/fstest targets query`：被标注"（被当前颜色筛选排除）"的就是被筛掉的。
 - "Simulator distortion detected! ... baseline differences ..." → 装置里有 v1 模拟器没覆盖到的东西（光敏元件、依赖实体的部分、爆炸、铁轨/栅栏的活塞搬移形状等）。看 `fstest-logs/` 里对应文件，基线 diff 行就是排查起点。
+
+## 0.4.2 变更
+
+**性能（关闭态开销）**
+- **所有采集 mixin 现在在无活跃采集会话时只读一次全局标志即返回。** 之前 `mode=none` 只是阻止会话被*建立*，注入钩子本身仍每次执行：在游戏最热的路径上（`Level#setBlock`、邻居更新派发、计划刻/方块事件创建、方块移除）每次调用都要付出 ThreadLocal 查找、map 查找、队列 `size()` 和对象分配的代价。现在 `RecorderHub` 提供全局快速门，所有热路径钩子第一行先查门（进入/退出成对加门，簿记保持平衡），关闭态在这些路径上的常驻开销只剩一次 volatile 读。
+
+**修复**
+- **`/fstest range` 别名失效，且带出了一个多余的顶层 `/range` 命令。** 旧实现把它注册成重定向到 `/fstest` 根的顶层命令，文档承诺的 `/fstest range <unlimited|r>` 根本无法解析，`/range ...` 还侵入了命令命名空间。现在它是真正的 `/fstest range` 子命令，转发到 scope 逻辑（参数、补全、用法与提示完全一致）。
+- **瞬时模式的模拟世界现在用现实中捕获到的随机种子初始化**（即规范要求的「种子取自现实」）；之前只有定时模式这么做，瞬时世界一直用常量种子。
+- 读不到真实随机种子时不再谎报「已知」：重放按文档回落到固定基数（之前读取失败会拿 `0` 当真实种子用），并以 debug 级日志说明。
+- 报告的「(+N more)」截断行在多个分组被截断时系统性少报剩余行数；现在按 diff 的事件总数计算。
+- 每次分析的文本日志在毫秒级时间戳撞名时不再整份丢失——文件名会追加数字后缀重试到可用为止。
+- 模拟服务器关闭时现在会释放已加载的数据包资源；引导失败也不再泄漏已创建的维度和存档目录锁。
+
+**移除**
+- 选区可视化不再在 `Minecraft#tick` 里画第二份：那份输出写进主渲染目标后、在整帧呈现前就被清除，从未真正上屏——纯属浪费（每个客户端 tick 白做 PoseStack/缓冲分配与批次刷新）。现在只在世界渲染阶段绘制，视觉效果与之前完全一致。
+
+**其他（小）**
+- 配置加载改为结束时统一发布一次客户端选区快照（原来每个字段发布一次）；`/fstest scope <半径>` 现在只写一次配置文件（原来写两次）。
+- 删除了未被引用的 `loom_version`/`parchment_version` gradle 属性（构建脚本硬编码 loom 版本，映射用官方 Mojang mappings）。
+- README：fabric-loader 要求改为与元数据一致（未声明最低版本，按 0.19.3 构建）；可视化描述与实际绘制阶段一致。
 
 ## 0.4.1 变更
 

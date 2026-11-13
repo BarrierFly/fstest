@@ -33,6 +33,12 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
  * be produced by a cascade (a shape update destroying a block, e.g. a trapdoor
  * invalidating a redstone wire's support); the two cases need different
  * filtering of the dispatches made inside the window.
+ *
+ * Both hooks share the {@link RecorderHub#isActive()} gate: with no session
+ * open the window is neither opened nor closed (keeping the window stack
+ * balanced), and the per-removal window/queue allocation disappears. Sessions
+ * only open and close outside of {@code affectNeighborsAfterRemoval}, so the
+ * two gates cannot disagree within one call.
  */
 @Mixin(LevelChunk.class)
 public abstract class LevelChunkRemovalWindowMixin
@@ -48,6 +54,10 @@ public abstract class LevelChunkRemovalWindowMixin
 	private void fstest$enterRemovalWindow(BlockPos pos, BlockState state, int flags,
 	                                        CallbackInfoReturnable<BlockState> cir)
 	{
+		if (!RecorderHub.isActive())
+		{
+			return;
+		}
 		Level level = ((LevelChunk) (Object) this).getLevel();
 		RecorderHub.enterRemovalWindow(level, level != null && NeighborCascades.isBusy(level), pos);
 	}
@@ -62,6 +72,10 @@ public abstract class LevelChunkRemovalWindowMixin
 	)
 	private void fstest$exitRemovalWindow(CallbackInfoReturnable<BlockState> cir)
 	{
+		if (!RecorderHub.isActive())
+		{
+			return;
+		}
 		RecorderHub.exitRemovalWindow();
 	}
 }

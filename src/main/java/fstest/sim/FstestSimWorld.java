@@ -69,6 +69,7 @@ import java.util.HashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.OptionalLong;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicLong;
 
@@ -249,14 +250,25 @@ public final class FstestSimWorld extends Level
 	// Random isolation
 	// ------------------------------------------------------------------
 
-	/** Seeds the world's own random from the state captured in reality (best effort). */
-	public void reseedRandomFromCapture(int runSalt)
+	/**
+	 * Seeds the world's own random from the state captured in reality (best
+	 * effort). All runs replay the same operation from the same initial state,
+	 * so every replay world shares one seed - differences between runs then
+	 * come from the transform alone, never from the random sequence.
+	 */
+	public void reseedRandomFromCapture()
 	{
 		long base = this.capturedSeedKnown ? this.capturedRandomSeed : 0x9E3779B97F4A7C15L;
-		this.random.setSeed(base ^ (runSalt * 0x5DEECE66DL));
+		this.random.setSeed(base);
 	}
 
-	static long tryCaptureRealRandomSeed(Level real)
+	/**
+	 * Reads the real world's random seed without advancing it. Empty when the
+	 * real random is not a reflectively readable {@link LegacyRandomSource}
+	 * (modded RNG, module restrictions) - callers fall back to the fixed base
+	 * instead of mistaking a zero for a genuine seed.
+	 */
+	static OptionalLong tryCaptureRealRandomSeed(Level real)
 	{
 		try
 		{
@@ -268,14 +280,14 @@ public final class FstestSimWorld extends Level
 				Object atomic = seedField.get(legacy);
 				if (atomic instanceof AtomicLong atomicLong)
 				{
-					return atomicLong.get(); // read only - never advances the real sequence
+					return OptionalLong.of(atomicLong.get()); // read only - never advances the real sequence
 				}
 			}
 		}
 		catch (Throwable ignored)
 		{
 		}
-		return 0L;
+		return OptionalLong.empty();
 	}
 
 	// ------------------------------------------------------------------

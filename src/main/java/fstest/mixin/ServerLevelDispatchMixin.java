@@ -24,6 +24,10 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
  * subtypes {@code BLOCK_UPDATE}, {@code BLOCK_UPDATE_EXCEPT} (carrying the
  * skipped side) and {@code SINGLE_BLOCK_UPDATE} for both neighborChanged
  * forms; the comparator-output dispatch is hooked separately on {@code Level}.
+ *
+ * Every hook returns immediately after one {@link RecorderHub#isActive()}
+ * read when no capture session is open - these are the hottest cascade paths
+ * in the game, so the idle-server cost is a single volatile read.
  */
 @Mixin(ServerLevel.class)
 public abstract class ServerLevelDispatchMixin
@@ -34,6 +38,10 @@ public abstract class ServerLevelDispatchMixin
 	)
 	private void fstest$dispatchUpdateNeighbors(BlockPos pos, Block block, @Nullable Orientation orientation, CallbackInfo ci)
 	{
+		if (!RecorderHub.isActive())
+		{
+			return;
+		}
 		RecorderHub.onNeighborDispatch((ServerLevel) (Object) this, UpdateKind.BLOCK_UPDATE,
 				pos, block, null, orientation, false, true);
 	}
@@ -45,6 +53,10 @@ public abstract class ServerLevelDispatchMixin
 	private void fstest$dispatchUpdateNeighborsExcept(BlockPos pos, Block block, @Nullable Direction exceptDir,
 	                                                  @Nullable Orientation orientation, CallbackInfo ci)
 	{
+		if (!RecorderHub.isActive())
+		{
+			return;
+		}
 		RecorderHub.onNeighborDispatch((ServerLevel) (Object) this, UpdateKind.BLOCK_UPDATE_EXCEPT,
 				pos, block, exceptDir, orientation, false, true);
 	}
@@ -55,6 +67,10 @@ public abstract class ServerLevelDispatchMixin
 	)
 	private void fstest$dispatchNeighborChanged(BlockPos pos, Block block, @Nullable Orientation orientation, CallbackInfo ci)
 	{
+		if (!RecorderHub.isActive())
+		{
+			return;
+		}
 		RecorderHub.onNeighborDispatch((ServerLevel) (Object) this, UpdateKind.SINGLE_BLOCK_UPDATE,
 				pos, block, null, orientation, false, true);
 	}
@@ -71,6 +87,10 @@ public abstract class ServerLevelDispatchMixin
 	private void fstest$dispatchNeighborChangedFull(BlockState state, BlockPos pos, Block block,
 	                                                @Nullable Orientation orientation, boolean movedByPiston, CallbackInfo ci)
 	{
+		if (!RecorderHub.isActive())
+		{
+			return;
+		}
 		RecorderHub.onNeighborDispatch((ServerLevel) (Object) this, UpdateKind.SINGLE_BLOCK_UPDATE,
 				pos, block, null, orientation, movedByPiston, true);
 	}

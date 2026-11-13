@@ -21,6 +21,11 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
  * {@code blockEvents.add(...)}; the pending set deduplicates an identical
  * (pos, block, paramA, paramB) entry silently. TIS therefore infers success
  * from the queue-size delta, which this hook reproduces.
+ *
+ * HEAD and RETURN share the {@link RecorderHub#isActive()} gate: with no
+ * session open neither the queue-size reads nor the delta comparison run.
+ * Sessions only open and close outside of {@code blockEvent}, so the two
+ * gates cannot disagree within one call.
  */
 @Mixin(ServerLevel.class)
 public abstract class ServerLevelBlockEventMixin
@@ -31,6 +36,10 @@ public abstract class ServerLevelBlockEventMixin
 	@Inject(method = "blockEvent", at = @At("HEAD"))
 	private void fstest$beforeBlockEvent(BlockPos pos, Block block, int eventID, int eventParam, CallbackInfo ci)
 	{
+		if (!RecorderHub.isActive())
+		{
+			return;
+		}
 		this.fstest$blockEventsBefore = ((ServerLevelBlockEventsAccessor) (Object) this)
 				.fstest$getBlockEvents().size();
 	}
@@ -38,6 +47,10 @@ public abstract class ServerLevelBlockEventMixin
 	@Inject(method = "blockEvent", at = @At("RETURN"))
 	private void fstest$onBlockEvent(BlockPos pos, Block block, int eventID, int eventParam, CallbackInfo ci)
 	{
+		if (!RecorderHub.isActive())
+		{
+			return;
+		}
 		ServerLevel self = (ServerLevel) (Object) this;
 		boolean success = ((ServerLevelBlockEventsAccessor) (Object) this)
 				.fstest$getBlockEvents().size() > this.fstest$blockEventsBefore;
